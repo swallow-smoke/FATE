@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NarrativeOS</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <!-- API error banner (Phase 5 Wave 1) -->
+  <div id="errorBanner" class="hidden"></div>
+
+  <!-- ======================= LAUNCHER (#/) ======================= -->
+  <div id="view-launcher" class="view">
+    <header class="launcher-head">
+      <div class="brand">
+        <span class="brand-mark">N</span>
+        <span class="brand-copy">
+          <strong>NarrativeOS</strong>
+          <small>AI campaign engine <span id="mode">…</span></small>
+        </span>
+      </div>
+      <div class="launcher-actions">
+        <select id="filterSel" title="상태 필터">
+          <option value="active">진행 중</option>
+          <option value="completed">완결됨</option>
+          <option value="all">전체</option>
+        </select>
+        <select id="sortSel" title="정렬">
+          <option value="recent">최근 순</option>
+          <option value="name">이름 순</option>
+          <option value="turns">턴 수 순</option>
+        </select>
+        <button id="importBtn">파일에서 불러오기</button>
+        <input type="file" id="importFile" accept=".json" class="hidden" />
+      </div>
+    </header>
+    <div id="quoteBanner" class="quote-banner hidden"></div>
+    <main id="launcherGrid" class="launcher-grid"></main>
+  </div>
+
+  <!-- ======================= WIZARD (#/new) ======================= -->
+  <div id="view-wizard" class="view hidden">
+    <header class="wizard-head">
+      <button id="wizBack" class="ghost-btn">← 런처로</button>
+      <div class="wizard-steps">
+        <span class="wstep active" data-step="1">1. 세계관</span>
+        <span class="wstep" data-step="2">2. 캐릭터</span>
+        <span class="wstep" data-step="3">3. 확인 및 시작</span>
+      </div>
+    </header>
+    <main id="wizardBody" class="wizard-body"></main>
+  </div>
+
+  <!-- ======================= GAME (#/c/:id) ======================= -->
+  <div id="view-game" class="view hidden">
+    <header id="topbar">
+      <div class="brand slim">
+        <button id="homeBtn" class="ghost-btn" title="런처로">〈</button>
+        <span class="brand-copy">
+          <strong id="campTitle">캠페인</strong>
+          <small id="campSub"></small>
+        </span>
+      </div>
+      <!-- Phase 5 — player-facing top tab bar (6 tabs). Dev data NEVER here. -->
+      <nav class="player-tabs" id="playerTabs">
+        <button class="ptab active" data-ptab="story">이야기</button>
+        <button class="ptab" data-ptab="character">캐릭터</button>
+        <button class="ptab" data-ptab="world">세계</button>
+        <button class="ptab" data-ptab="relations">관계</button>
+        <button class="ptab" data-ptab="inventory">인벤토리</button>
+        <button class="ptab" data-ptab="settings">설정</button>
+      </nav>
+      <div class="top-actions">
+        <span id="autosaveTag" class="autosave-tag hidden">✓ 저장됨</span>
+        <button id="advancedBtn" class="hidden" title="Advanced 패널 (모든 내부 변수 · 읽기 전용)">Advanced</button>
+        <label class="dbg"><input type="checkbox" id="debug" /> 디버그</label>
+        <button id="devToggle" title="개발자 패널 (플레이어 정보와 완전 분리)">⚙</button>
+      </div>
+    </header>
+
+    <div id="workspace">
+      <!-- ============ player tab pages ============ -->
+      <section class="ppage active" id="ppage-story">
+        <div id="chatpane">
+          <div class="story-controls">
+            <button id="timeSkipBtn" title="시간 건너뛰기">⏩ 시간 스킵</button>
+            <button id="undoBtn" title="직전 턴 되돌리기" disabled>↩ 되돌리기</button>
+            <button id="regenBtn" title="마지막 응답 다시 생성" disabled>🔄 다시 생성</button>
+            <button id="branchBtn" title="현 시점에서 분기 세이브 생성">⑂ 분기 세이브</button>
+            <button id="forceEventBtn" title="다음 장면에 사건을 강하게 요청합니다">⚡ 사건 필요해</button>
+            <button id="historyToggleBtn" title="대화 검색/필터">🔍 검색</button>
+            <button id="readModeBtn" title="읽기 모드 (소설처럼)">📖 읽기 모드</button>
+            <button id="funBtn" title="동전던지기 / 운세뽑기 (기록에 영향 없음)">🎲 재미</button>
+          </div>
+
+          <div id="historyPanel" class="history-panel hidden">
+            <div class="history-row">
+              <input id="histQ" placeholder="대화 내용 검색…" />
+              <select id="histNpc"><option value="">모든 인물</option></select>
+              <select id="histEmotion"><option value="">모든 감정</option></select>
+              <button id="histGo">검색</button>
+            </div>
+            <div id="histRecent" class="hist-recent"></div>
+            <div id="histResults" class="hist-results"></div>
+          </div>
+
+          <main id="log" aria-live="polite"></main>
+          <button id="scrollBottomBtn" class="scroll-bottom-btn hidden" title="맨 아래로">↓</button>
+          <div id="choices" class="choices hidden"></div>
+          <div id="mentionHint" class="mention-hint hidden"></div>
+          <div id="slashHint" class="slash-hint hidden"></div>
+          <form id="composer">
+            <textarea id="input" rows="1" autocomplete="off" placeholder="행동을 입력하세요… (Enter 전송 · Shift+Enter 줄바꿈 · / 명령어)"></textarea>
+            <button type="button" id="cancelSend" class="hidden" title="전송 취소">✕</button>
+            <button type="submit" id="send">보내기</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="ppage" id="ppage-character"><div class="page-scroll" id="characterBody"></div></section>
+      <section class="ppage" id="ppage-world">
+        <nav class="subtabs" id="worldSubtabs">
+          <button class="stab active" data-stab="timeline">연대기</button>
+          <button class="stab" data-stab="foreshadow">복선</button>
+          <button class="stab" data-stab="rumor">소문</button>
+          <button class="stab" data-stab="reputation">세력 평판</button>
+          <button class="stab" data-stab="clues">단서/결과</button>
+          <button class="stab" data-stab="comm">통신</button>
+          <button class="stab" data-stab="wiki">백과사전</button>
+        </nav>
+        <div class="page-scroll" id="worldBody"></div>
+      </section>
+      <section class="ppage" id="ppage-relations"><div class="page-scroll" id="relationsBody"></div></section>
+      <section class="ppage" id="ppage-inventory"><div class="page-scroll" id="inventoryBody"></div></section>
+      <section class="ppage" id="ppage-settings"><div class="page-scroll" id="settingsBody"></div></section>
+
+      <!-- ============ developer slide panel (kept fully separate) ============ -->
+      <aside id="sidebar" class="collapsed">
+        <nav class="tabs">
+          <button class="tab active" data-tab="emotion">감정</button>
+          <button class="tab" data-tab="memory">기억</button>
+          <button class="tab" data-tab="canon">관계/Canon</button>
+          <button class="tab" data-tab="health">Health</button>
+          <button class="tab" data-tab="trace">디버그</button>
+        </nav>
+        <div class="devnote">⚙ 개발자/작가용 관찰 패널 — 이 정보는 게임 내 플레이어에게 절대 노출되지 않습니다.</div>
+        <div class="panel active" id="panel-emotion"></div>
+        <div class="panel" id="panel-memory"></div>
+        <div class="panel" id="panel-canon"></div>
+        <div class="panel" id="panel-health"></div>
+        <div class="panel" id="panel-trace"></div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- ============ Phase 7 Part D: Advanced panel (full-screen, read-only) ============ -->
+  <div id="advancedPanel" class="advanced-panel hidden">
+    <header class="adv-head">
+      <strong>Advanced — 내부 상태 관찰 (읽기 전용)</strong>
+      <input id="advSearch" placeholder="전체 검색 (예: 리아)…" />
+      <button id="advClose" class="ghost-btn">닫기 ✕</button>
+    </header>
+    <nav class="adv-tabs" id="advTabs">
+      <button class="atab active" data-atab="emotion">감정</button>
+      <button class="atab" data-atab="psychology">심리</button>
+      <button class="atab" data-atab="relationships">관계</button>
+      <button class="atab" data-atab="memory">기억</button>
+      <button class="atab" data-atab="canon">Canon</button>
+      <button class="atab" data-atab="structure">스토리 구조</button>
+      <button class="atab" data-atab="difficulty">난이도</button>
+      <button class="atab" data-atab="world">세계</button>
+      <button class="atab" data-atab="clues">단서/체인</button>
+      <button class="atab" data-atab="health">캠페인 건강도</button>
+      <button class="atab" data-atab="director">Director 로그</button>
+    </nav>
+    <div id="advBody" class="adv-body"></div>
+  </div>
+
+  <!-- shared modal -->
+  <div id="modalBack" class="modal-back hidden"><div id="modalBox" class="modal-box"></div></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/gsap.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/SplitText.min.js"></script>
+  <script src="/js/util.js"></script>
+  <script src="/js/dev.js"></script>
+  <script src="/js/story.js"></script>
+  <script src="/js/history.js"></script>
+  <script src="/js/tabs.js"></script>
+  <script src="/js/advanced.js"></script>
+  <script src="/js/launcher.js"></script>
+  <script src="/js/wizard.js"></script>
+  <script src="/js/main.js"></script>
+</body>
+</html>
