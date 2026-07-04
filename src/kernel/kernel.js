@@ -28,6 +28,7 @@ const REQUEST_TYPES = new Set([
   "trait.create", // Phase 9 F3 — dynamic traits
   "trait.update",
   "trait.delete", // Phase 10 M3 — faded-trait removal
+  "plugin.register", // Phase 15 CC — declarative plugin manifest (validated, app-global)
 ]);
 
 const TRAIT_CREATE_COOLDOWN = 20; // no new trait on the same character within N turns
@@ -207,6 +208,17 @@ function createKernel({ canonDb, memoryEngine }) {
         if (!payload.from || !payload.to) return resp(false, "relationship.update needs from/to");
         const edge = relationshipGraph.upsert(state, payload);
         return resp(true, "relationship updated", edge);
+      }
+
+      // Phase 15 CC3 — validate a plugin manifest through the same Kernel
+      // envelope as everything else, then register it into the app-global table.
+      // Not tied to CampaignState (plugins are global), so no state mutation.
+      case "plugin.register": {
+        const plugins = require("../plugins/plugins");
+        const v = plugins.validateManifest(payload);
+        if (!v.ok) return resp(false, v.reason || "plugin manifest invalid", { rejected: v.rejected || [] });
+        const saved = plugins.register(v.manifest);
+        return resp(true, "plugin registered", saved);
       }
 
       case "memory.promote":

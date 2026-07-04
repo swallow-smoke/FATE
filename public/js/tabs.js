@@ -307,6 +307,12 @@ async function loadRelationsTab() {
   const npcEdgeList = (d.npc_edges || []).map((e) => `
     <div class="rep-row"><span>${escapeHtml(e.from)} ↔ ${escapeHtml(e.to)}</span>
       <span class="rep-label">${escapeHtml(e.type || relLabel(e))}</span></div>`).join("");
+  // PATCH 관계 전환 — "관계 변화 이력" (성장 궤적과 같은 타임라인 UI 패턴 재사용).
+  // 여기서만 from→to 라벨을 온전히 보여준다 (토스트/사이드바는 스포일러 방지).
+  const relMilestones = (d.relationship_milestones || []).slice().reverse().map((m) => `
+    <div class="tl-item"><span class="tl-turn">${m.turn}턴</span>
+      <div class="tl-body"><b>${escapeHtml(m.npc_name || m.npc_ref)}</b> — ${m.from_label ? `<span class="muted">${escapeHtml(m.from_label)}</span> → ` : ""}<b>${escapeHtml(m.to_label)}</b>
+      ${m.trigger_summary ? `<div class="muted">${escapeHtml(m.trigger_summary)}</div>` : ""}</div></div>`).join("");
   box.innerHTML = `
     <div class="content-card"><h3>관계도</h3>
       <svg class="rel-graph" viewBox="0 0 ${W} ${H}">
@@ -317,6 +323,7 @@ async function loadRelationsTab() {
         ${svgNodes}
       </svg></div>
     ${edges.map((e) => `<div class="rep-row"><b>${escapeHtml(e.name)}</b><span class="rep-label">${escapeHtml(relLabel(e.rel))}</span></div>${e.schedule_hint ? `<div class="sched-hint muted">🕑 ${escapeHtml(e.schedule_hint)}</div>` : ""}`).join("")}
+    ${relMilestones ? `<div class="content-card"><h3>관계 변화 이력</h3><div class="timeline">${relMilestones}</div></div>` : ""}
     ${npcEdgeList ? `<div class="content-card"><h3>그들 사이의 이야기</h3>${npcEdgeList}</div>` : ""}`;
 }
 
@@ -342,7 +349,7 @@ const DNA_LABEL = { tone: "밝음/어두움", emotion: "감정 밀도", politics
 async function loadSettingsTab() {
   const box = $("settingsBody");
   box.innerHTML = `<div class="muted">불러오는 중…</div>`;
-  const [state, usage] = await Promise.all([api("/api/state/" + NOS.campaign), api("/api/usage/" + NOS.campaign)]);
+  const state = await api("/api/state/" + NOS.campaign);
   NOS.settingsCache = state.settings;
   const dna = state.narrative_dna || {};
   const sliders = DNA_KEYS.map((k) => `
@@ -351,18 +358,15 @@ async function loadSettingsTab() {
       <span class="dna-val">${dna[k] || 3}</span></div>`).join("");
   const rules = (state.house_rules || []).map((r, i) => `
     <div class="hr-row"><input class="hr-input" data-i="${i}" value="${escapeHtml(r)}" /><button class="hr-del" data-i="${i}">✕</button></div>`).join("");
-  const fontSize = localStorage.getItem("nos_font") || "14";
-  const fontFamily = localStorage.getItem("nos_font_family") || "system";
-  const colorblind = localStorage.getItem("nos_colorblind") === "1";
-  const theme = localStorage.getItem("nos_theme") || "dark";
-  const chatStyle = localStorage.getItem("nos_chat_style") || "bubble";
-  const typingFx = localStorage.getItem("nos_typing_effect") === "1";
-  const lowSpec = localStorage.getItem("nos_low_spec") === "1";
-  const reduceMotion = localStorage.getItem("nos_reduce_motion") === "1";
 
-  const [notesData, playstats, autosaveSlots] = await Promise.all([
+  const [notesData, playstats, autosaveSlots, snapData] = await Promise.all([
     api("/api/notes/" + NOS.campaign), api("/api/playstats/" + NOS.campaign), api("/api/autosave/" + NOS.campaign),
+    api("/api/snapshots/" + NOS.campaign),
   ]);
+  // Phase 13 V8 — long-range snapshots (every 100 turns; destructive restore).
+  const snapRows = (snapData.snapshots || []).map((s) => `
+    <div class="rep-row"><span>${s.turn}턴 스냅샷</span>
+      <button class="snap-restore" data-turn="${s.turn}">이 시점으로 되돌리기</button></div>`).join("");
   const noteRows = (notesData.notes || []).slice().reverse().map((n) => `
     <div class="note-row"><div class="note-text">${escapeHtml(n.text)}</div>
       <div class="note-meta">${fmtDate(n.created_at)} <button class="note-del" data-id="${n.id}">삭제</button></div></div>`).join("");
@@ -382,6 +386,8 @@ async function loadSettingsTab() {
 
     <div class="content-card"><h3>플레이 설정</h3>
       <label class="set-row"><input type="checkbox" id="setChoices" ${state.settings.choices_ui ? "checked" : ""}/> 선택지 버튼 표시 (기본 꺼짐 — 자유 서술 우선)</label>
+      <label class="set-row"><input type="checkbox" id="setAgencyLock" ${state.settings.player_agency_lock !== false ? "checked" : ""}/> 플레이어 캐릭터 행동은 항상 플레이어가 결정 (기본 켜짐)</label>
+      <p class="muted">켜면 AI는 상황과 NPC 반응까지만 서술하고, 당신 캐릭터의 행동·대사·선택은 당신 입력을 기다립니다. 끄면 시간 스킵 등에서 AI가 당신 캐릭터의 사소한 반응까지 서술할 수 있습니다. (NPC 행동에는 영향 없음)</p>
       <div class="set-row"><span>묘사 수위</span>
         <select id="setIntensity">
           <option value="low" ${state.settings.content_intensity === "low" ? "selected" : ""}>낮음</option>
@@ -422,35 +428,9 @@ async function loadSettingsTab() {
       <p class="muted">턴마다 자동 저장됩니다. 필요하면 최근 시점 중 하나로 돌아갈 수 있습니다.</p>
       ${slotRows || `<p class="muted">아직 자동저장이 없습니다.</p>`}</div>
 
-    <div class="content-card"><h3>개인화</h3>
-      <div class="set-row"><span>테마</span>
-        <select id="setTheme">
-          <option value="dark" ${theme === "dark" ? "selected" : ""}>다크 종이</option>
-          <option value="light" ${theme === "light" ? "selected" : ""}>라이트 종이</option>
-          <option value="mono" ${theme === "mono" ? "selected" : ""}>단색</option>
-          <option value="plain" ${theme === "plain" ? "selected" : ""}>심플</option>
-        </select></div>
-      <div class="set-row"><span>채팅 스타일</span>
-        <select id="setChatStyle"><option value="bubble" ${chatStyle === "bubble" ? "selected" : ""}>말풍선형</option><option value="novel" ${chatStyle === "novel" ? "selected" : ""}>소설체</option></select></div>
-      <label class="set-row"><input type="checkbox" id="setDnaColor" ${localStorage.getItem("nos_dna_color") !== "0" ? "checked" : ""}/> 세계관 톤에 맞춰 화면 색조 자동 반영</label></div>
-
-    <div class="content-card"><h3>접근성</h3>
-      <div class="set-row"><span>글자 크기</span>
-        <select id="setFont"><option value="13" ${fontSize === "13" ? "selected" : ""}>작게</option><option value="14" ${fontSize === "14" ? "selected" : ""}>보통</option><option value="16" ${fontSize === "16" ? "selected" : ""}>크게</option><option value="18" ${fontSize === "18" ? "selected" : ""}>아주 크게</option></select></div>
-      <div class="set-row"><span>폰트</span>
-        <select id="setFontFamily"><option value="system" ${fontFamily === "system" ? "selected" : ""}>기본</option><option value="serif" ${fontFamily === "serif" ? "selected" : ""}>명조/세리프</option><option value="mono" ${fontFamily === "mono" ? "selected" : ""}>고정폭</option></select></div>
-      <label class="set-row"><input type="checkbox" id="setColorblind" ${colorblind ? "checked" : ""}/> 색맹 친화 모드</label>
-      <label class="set-row"><input type="checkbox" id="setTypingFx" ${typingFx ? "checked" : ""}/> 서사 타이핑 효과</label>
-      <label class="set-row"><input type="checkbox" id="setLowSpec" ${lowSpec ? "checked" : ""}/> 저사양 모드 (애니메이션·그래프 효과 최소화)</label></div>
-
-    <div class="content-card"><h3>사용량 대시보드</h3>
-      <p class="muted">무료 티어 RPD(하루 요청 수) 소진 추적용입니다 — 실제 결제 여부와는 별개입니다.</p>
-      <p>누적 AI 호출: <b>${usage.calls}회</b> · 입력 ${usage.prompt_tokens.toLocaleString()} / 출력 ${usage.output_tokens.toLocaleString()} 토큰 · 예상 $${usage.estimated_cost_usd}</p>
-      ${usageBars(usage.by_category || {})}
-      <div class="set-row"><span>오늘 한도(RPD)</span>
-        <input id="setRpd" type="number" min="0" placeholder="예: 250" value="${(state.settings && state.settings.rpd_limit) || ""}" style="width:100px" />
-        <button id="rpdSave">저장</button></div>
-      ${usage.today && usage.today.limit ? `<p>오늘 사용량: <b>${usage.today.call_count}/${usage.today.limit}</b> (${usage.today.pct}%)${usage.today.warn ? ' <span class="tag" style="color:#d99">한도 임박</span>' : ""}</p>` : usage.today ? `<p class="muted">오늘 호출 ${usage.today.call_count}회 (한도 미설정)</p>` : ""}</div>
+    <div class="content-card"><h3>장기 스냅샷 (100턴 주기)</h3>
+      <p class="muted">100턴마다 전체 상태를 통째로 저장합니다 (최근 3개 유지). "100턴 전으로" 같은 큰 되돌리기용입니다 — <b>되돌리면 이후 진행이 사라집니다.</b></p>
+      ${snapRows || `<p class="muted">아직 장기 스냅샷이 없습니다 (100턴 이상 진행 시 생성).</p>`}</div>
 
     <div class="content-card"><h3>저토큰 모드</h3>
       <label class="set-row"><input type="checkbox" id="setLowToken" ${state.settings.low_token_mode ? "checked" : ""}/> 저토큰 모드 (무료 한도 걱정될 때만)</label>
@@ -468,15 +448,13 @@ async function loadSettingsTab() {
       <button id="saveTemplateBtn">현재 세계관을 템플릿으로 저장</button>
       <div id="saveTemplateResult" class="muted"></div></div>
 
-    <div class="content-card"><h3>API 키 상태</h3>
-      <p class="muted">키는 앱에 저장하지 않고 환경변수(<code>GEMINI_API_KEYS</code> 쉼표구분, 또는 <code>GEMINI_API_KEY</code>, <code>GEMINI_API_KEY_2…</code>)에서만 읽습니다. 429(쿼터 초과) 시 자동으로 다음 키로 전환합니다.</p>
-      <div id="keyStatus" class="muted">불러오는 중…</div>
-      <button id="keyReloadBtn">환경변수에서 키 다시 읽기</button></div>
-
     <div class="content-card"><h3>고급 (작가/개발자용)</h3>
       <label class="set-row"><input type="checkbox" id="setAdvanced" ${state.settings.advanced_mode ? "checked" : ""}/> Advanced 모드 — 모든 내부 변수(감정·관계·Hidden·난이도·구조 등)를 볼 수 있는 패널을 켭니다</label>
-      <p class="muted">기본 꺼짐. 켜면 상단에 <b>Advanced</b> 버튼이 나타납니다. 플레이어에게 보여주면 몰입이 깨지니 본인이 쓸 때만 켜세요. (읽기 전용)</p>
-      <p class="muted">플러그인/모드 확장은 이후 단계에서 이 자리에 추가됩니다. 현재는 House Rules가 경량 모드 역할을 합니다.</p></div>`;
+      <p class="muted">기본 꺼짐. 켜면 상단에 <b>Advanced</b> 버튼이 나타납니다. 플레이어에게 보여주면 몰입이 깨지니 본인이 쓸 때만 켜세요. (읽기 전용)</p></div>
+
+    <div class="content-card"><h3>화면·앱 설정은 런처로 이동했습니다</h3>
+      <p class="muted">테마·글자·채팅 스타일 같은 <b>꾸미기</b> 설정과 커스텀 테마·API 키·플러그인·전체 사용량은 이제 런처의 <b>⚙ 설정</b>에서 관리합니다. 이 탭에는 이야기에 직접 영향을 주는 설정만 남겼습니다.</p>
+      <button id="gotoLauncherSettings">런처 설정 열기 →</button></div>`;
 
   // wiring
   box.querySelectorAll('input[type="range"][data-dna]').forEach((r) =>
@@ -490,6 +468,12 @@ async function loadSettingsTab() {
   $("setChoices").addEventListener("change", async (e) => {
     await apiPost(`/api/state/${NOS.campaign}/settings`, { settings: { choices_ui: e.target.checked } });
     NOS.settingsCache.choices_ui = e.target.checked;
+  });
+  // C9 — player-agency lock (story-affecting → injected into the GM prompt).
+  $("setAgencyLock").addEventListener("change", async (e) => {
+    await apiPost(`/api/state/${NOS.campaign}/settings`, { settings: { player_agency_lock: e.target.checked } });
+    NOS.settingsCache.player_agency_lock = e.target.checked;
+    showBanner(e.target.checked ? "이제 당신 캐릭터의 행동은 항상 당신이 결정합니다." : "AI가 당신 캐릭터의 사소한 반응까지 서술할 수 있습니다.");
   });
   $("setIntensity").addEventListener("change", async (e) => {
     await apiPost(`/api/state/${NOS.campaign}/settings`, { settings: { content_intensity: e.target.value } });
@@ -523,25 +507,12 @@ async function loadSettingsTab() {
     await apiPost(`/api/state/${NOS.campaign}/settings`, { house_rules: rules });
     showBanner("House Rules가 저장되었습니다.");
   });
-  $("setFont").addEventListener("change", (e) => { localStorage.setItem("nos_font", e.target.value); applyAccessibility(); });
-  $("setFontFamily").addEventListener("change", (e) => { localStorage.setItem("nos_font_family", e.target.value); applyAccessibility(); });
-  $("setColorblind").addEventListener("change", (e) => { localStorage.setItem("nos_colorblind", e.target.checked ? "1" : "0"); applyAccessibility(); });
-  $("setTypingFx").addEventListener("change", (e) => localStorage.setItem("nos_typing_effect", e.target.checked ? "1" : "0"));
-  $("setLowSpec").addEventListener("change", (e) => { localStorage.setItem("nos_low_spec", e.target.checked ? "1" : "0"); applyAccessibility(); });
-  $("setTheme").addEventListener("change", (e) => { localStorage.setItem("nos_theme", e.target.value); applyAccessibility(); });
-  $("setChatStyle").addEventListener("change", (e) => { localStorage.setItem("nos_chat_style", e.target.value); applyAccessibility(); });
-  $("setDnaColor").addEventListener("change", async (e) => {
-    localStorage.setItem("nos_dna_color", e.target.checked ? "1" : "0");
-    const s = await api("/api/state/" + NOS.campaign);
-    applyDnaTheme(s.narrative_dna);
-  });
+  // App-wide cosmetic/accessibility/theme/key/plugin/usage controls moved to the
+  // launcher settings view (#/settings, launcherSettings.js). This tab keeps only
+  // story-affecting settings.
+  $("gotoLauncherSettings").addEventListener("click", () => { location.hash = "#/settings"; });
 
-  // Phase 12 U2/U3 — RPD limit + low-token mode.
-  if ($("rpdSave")) $("rpdSave").addEventListener("click", async () => {
-    await apiPost(`/api/state/${NOS.campaign}/settings`, { settings: { rpd_limit: Number($("setRpd").value) || 0 } });
-    showBanner("하루 요청 한도를 저장했습니다.");
-    loadSettingsTab();
-  });
+  // Phase 12 U3 — low-token mode (per-campaign, affects AI call volume).
   if ($("setLowToken")) $("setLowToken").addEventListener("change", async (e) => {
     await apiPost(`/api/state/${NOS.campaign}/settings`, { settings: { low_token_mode: e.target.checked } });
     NOS.settingsCache.low_token_mode = e.target.checked;
@@ -556,18 +527,6 @@ async function loadSettingsTab() {
       showBanner("세계관 템플릿이 저장되었습니다.");
     } catch (e) { $("saveTemplateResult").textContent = "저장 실패: " + e.message; }
   });
-
-  // Phase 8 D1 — API key pool status (never shows key values).
-  const renderKeyStatus = async () => {
-    try {
-      const k = await api("/api/keys");
-      $("keyStatus").innerHTML = k.total === 0
-        ? "등록된 키 없음 — MOCK 모드로 동작합니다."
-        : `총 ${k.total}개 · 사용 가능 ${k.available}개` + (k.keys || []).map((x) => `<div>${x.key_ref}: ${x.exhausted ? "⛔ 쿼터 소진" : "✓ 사용 가능"}</div>`).join("");
-    } catch (e) { $("keyStatus").textContent = "상태를 불러오지 못했습니다."; }
-  };
-  renderKeyStatus();
-  $("keyReloadBtn").addEventListener("click", async () => { await apiPost("/api/keys/reload", {}); renderKeyStatus(); showBanner("환경변수에서 키를 다시 읽었습니다."); });
 
   // Phase 6 D — personal notebook (never reaches the prompt; separate store).
   $("noteAdd").addEventListener("click", async () => {
@@ -600,6 +559,14 @@ async function loadSettingsTab() {
     b.addEventListener("click", async () => {
       if (!confirm(`턴 ${b.dataset.turn} 시점으로 되돌립니다. 계속할까요?`)) return;
       await apiPost(`/api/autosave/${NOS.campaign}/restore`, { turn: Number(b.dataset.turn) });
+      enterCampaign(NOS.campaign);
+    }));
+
+  // Phase 13 V8 — long-range snapshot restore (destructive; extra confirm).
+  box.querySelectorAll(".snap-restore").forEach((b) =>
+    b.addEventListener("click", async () => {
+      if (!confirm(`${b.dataset.turn}턴 스냅샷으로 되돌립니다. 그 이후의 모든 진행이 사라집니다. 계속할까요?`)) return;
+      await apiPost(`/api/snapshots/${NOS.campaign}/restore`, { turn: Number(b.dataset.turn) });
       enterCampaign(NOS.campaign);
     }));
 
@@ -664,4 +631,14 @@ function applyAccessibility() {
   document.body.classList.toggle("font-serif", localStorage.getItem("nos_font_family") === "serif");
   document.body.classList.toggle("font-mono", localStorage.getItem("nos_font_family") === "mono");
   document.body.classList.toggle("reduce-motion", localStorage.getItem("nos_reduce_motion") === "1");
+  // Phase 15 BB — reapply a saved custom theme's CSS variable tokens.
+  try { const saved = localStorage.getItem("nos_custom_theme"); if (saved) applyThemeTokens(JSON.parse(saved)); } catch (_) {}
+}
+
+// Phase 15 BB — set validated CSS custom-property tokens on :root.
+function applyThemeTokens(tokens) {
+  const root = document.documentElement;
+  for (const [k, v] of Object.entries(tokens || {})) {
+    if (typeof k === "string" && k.startsWith("--")) root.style.setProperty(k, v);
+  }
 }

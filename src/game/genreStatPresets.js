@@ -21,27 +21,33 @@ function presetFor(techLevel) {
 
 // Register the preset directly on player.dynamic_traits (bypasses trait.create
 // rate limit — this is a one-time setup, not an in-play event).
-function applyPreset(state) {
-  const preset = presetFor(state.world && state.world.tech_level);
-  if (!preset) return null;
+function addPresetTrait(state, name, category, desc) {
   state.player.dynamic_traits = state.player.dynamic_traits || [];
-  if (state.player.dynamic_traits.some((t) => t.name === preset.name)) return null;
+  if (state.player.dynamic_traits.some((t) => t.name === name)) return null;
   const trait = {
-    trait_id: `trait_preset_${preset.name}`,
-    name: preset.name,
-    category: preset.category,
+    trait_id: `trait_preset_${name}`,
+    name, category,
     origin_event_turn: 0,
     origin_summary: "타고난 소양 (장르 기본 특성)",
-    canon_refs: [],
-    value: 0,
-    trend: "stable",
-    last_updated_turn: 0,
-    visible_to_player: true,
-    origin: "genre_preset",
-    player_facing_description: preset.player_facing_description,
+    canon_refs: [], value: 0, trend: "stable", last_updated_turn: 0,
+    visible_to_player: true, origin: "genre_preset",
+    player_facing_description: desc || name,
   };
   state.player.dynamic_traits.push(trait);
   return trait;
+}
+
+function applyPreset(state) {
+  const applied = [];
+  const preset = presetFor(state.world && state.world.tech_level);
+  if (preset) { const t = addPresetTrait(state, preset.name, preset.category, preset.player_facing_description); if (t) applied.push(t); }
+  // Phase 15 CC — plugin-registered genre→stat presets (keyed by genre_preset).
+  try {
+    const pluginPresets = require("../plugins/plugins").traitPresets();
+    const genre = String((state.meta && state.meta.genre_preset) || "").toLowerCase();
+    if (genre && pluginPresets[genre]) { const t = addPresetTrait(state, pluginPresets[genre], "social", `${genre} 장르의 기본 소양`); if (t) applied.push(t); }
+  } catch (_) {}
+  return applied.length ? applied[0] : null;
 }
 
 module.exports = { presetFor, applyPreset, PRESET_BY_TECH };

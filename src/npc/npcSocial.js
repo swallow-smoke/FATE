@@ -18,7 +18,8 @@ let seq = 0;
 function metNpcs(state, canonDb) {
   return (state.npcs || []).filter((n) => {
     const e = canonDb.get(n.canon_ref);
-    return e && e.data && e.data.discovered_by_player && e.data.current_status !== "dead";
+    // C3 — never let a "연결 없음" world-figure proactively contact the player.
+    return e && e.data && e.data.discovered_by_player && e.data.current_status !== "dead" && !e.data.no_player_relationship;
   });
 }
 

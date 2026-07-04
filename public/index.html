@@ -4,6 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>NarrativeOS</title>
+  <!-- Design spec v2 fonts: Pretendard (UI) + Noto Serif KR (narrative). -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@400;500;600&display=swap" />
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
@@ -33,10 +38,22 @@
         </select>
         <button id="importBtn">파일에서 불러오기</button>
         <input type="file" id="importFile" accept=".json" class="hidden" />
+        <button id="launcherSettingsBtn" title="설정 (화면·테마·API키·플러그인·사용량)">⚙ 설정</button>
       </div>
     </header>
     <div id="quoteBanner" class="quote-banner hidden"></div>
     <main id="launcherGrid" class="launcher-grid"></main>
+  </div>
+
+  <!-- ================= LAUNCHER SETTINGS (#/settings) ================= -->
+  <!-- 앱 전역 설정: 화면 꾸미기·접근성·커스텀 테마·API 키·플러그인·사용량.
+       스토리에 영향 주는 설정(DNA·플레이·하우스룰 등)은 캠페인 내부 설정 탭에 있음. -->
+  <div id="view-launcher-settings" class="view hidden">
+    <header class="wizard-head">
+      <button id="lsBack" class="ghost-btn">← 런처로</button>
+      <div class="brand-copy"><strong>설정</strong> <small>화면 꾸미기 · API · 플러그인 · 사용량</small></div>
+    </header>
+    <main id="launcherSettingsBody" class="page-scroll"></main>
   </div>
 
   <!-- ======================= WIZARD (#/new) ======================= -->
@@ -73,6 +90,8 @@
       </nav>
       <div class="top-actions">
         <span id="autosaveTag" class="autosave-tag hidden">✓ 저장됨</span>
+        <button id="notifBtn" title="알림 (메시지 · 세계 소식)">🔔<span id="notifBadge" class="notif-badge hidden">0</span></button>
+        <button id="commBtn" title="통신 (메시지 · 편지)">💬</button>
         <button id="advancedBtn" class="hidden" title="Advanced 패널 (모든 내부 변수 · 읽기 전용)">Advanced</button>
         <label class="dbg"><input type="checkbox" id="debug" /> 디버그</label>
         <button id="devToggle" title="개발자 패널 (플레이어 정보와 완전 분리)">⚙</button>
@@ -173,8 +192,41 @@
       <button class="atab" data-atab="clues">단서/체인</button>
       <button class="atab" data-atab="health">캠페인 건강도</button>
       <button class="atab" data-atab="director">Director 로그</button>
+      <button class="atab" data-atab="prompt">프롬프트</button>
+      <button class="atab" data-atab="performance">성능</button>
     </nav>
     <div id="advBody" class="adv-body"></div>
+  </div>
+
+  <!-- ============ C6: left notification sidebar (player-facing; SEPARATE from
+       the right-side Advanced/dev panel) ============ -->
+  <aside id="notifSidebar" class="notif-sidebar hidden">
+    <header class="notif-head">
+      <strong>알림</strong>
+      <div class="notif-head-actions">
+        <button id="notifReadAll" class="ghost-btn" title="모두 읽음 처리">모두 읽음</button>
+        <button id="notifClose" class="ghost-btn" title="닫기">✕</button>
+      </div>
+    </header>
+    <div id="notifList" class="notif-list"></div>
+  </aside>
+  <div id="notifBackdrop" class="notif-backdrop hidden"></div>
+
+  <!-- ============ C5: toast host (bottom-right) ============ -->
+  <div id="toastHost" class="toast-host"></div>
+
+  <!-- ============ C7: communication modal (messenger / letter skin) ============ -->
+  <div id="commModal" class="comm-modal hidden">
+    <div class="comm-box">
+      <header class="comm-head">
+        <strong id="commTitle">통신</strong>
+        <button id="commClose" class="ghost-btn">닫기 ✕</button>
+      </header>
+      <div class="comm-body">
+        <div id="commList" class="comm-list"></div>
+        <div id="commThread" class="comm-thread"></div>
+      </div>
+    </div>
   </div>
 
   <!-- shared modal -->
@@ -189,7 +241,9 @@
   <script src="/js/tabs.js"></script>
   <script src="/js/advanced.js"></script>
   <script src="/js/launcher.js"></script>
+  <script src="/js/launcherSettings.js"></script>
   <script src="/js/wizard.js"></script>
+  <script src="/js/notifications.js"></script>
   <script src="/js/main.js"></script>
 </body>
 </html>

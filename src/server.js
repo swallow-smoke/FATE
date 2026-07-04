@@ -115,6 +115,7 @@ app.post("/api/turn", async (req, res) => {
       ending: result.ending || null, // Phase 4 B2 — campaign-complete payload
       pending_transition: result.pending_transition || null, // Phase 8 C2 — needs confirm
       daily_summary: result.daily_summary || null, // Phase 10 J2
+      time_accel: result.time_accel || null, // Phase 14 Y — batch offscreen summary
       countdowns: require("./game/countdowns").build(state), // Phase 10 O — revealed only
       undo_available: !!undo.available(campaignId),
       story_structure: state.story_structure, // Phase 6 D — progress bar
@@ -465,7 +466,49 @@ app.get("/api/advanced/:id", (req, res) => {
     director_log: state.director_debate_log || [],
     scheduled_actions: summary.scheduled_actions,
     integrity_log: summary.integrity_log,
+    // Phase 13/14 — infra + debug views.
+    prompt: { last_prompt: state.last_prompt || null, prompt_profile: state.prompt_profile || {}, context_cache: require("./gemini/contextCache").status(req.params.id) }, // X1 + V1/V3
+    performance: state.perf_log || [], // X2
+    integrity: { log: summary.integrity_log, hallucination_candidates: state.hallucination_candidates || [], extraction_failure_streak: state.extraction_failure_streak || 0 }, // W
+    snapshots: require("./state/snapshots").list(req.params.id), // V8
+    state_change_log: (state.state_change_log || []).slice(-20), // V7
   });
+});
+
+// GET /api/snapshots/:id — Phase 13 V8 long-range rollback snapshots.
+app.get("/api/snapshots/:id", (req, res) => res.json({ snapshots: require("./state/snapshots").list(req.params.id) }));
+
+// POST /api/snapshots/:id/restore — destructive; the client shows a confirm.
+app.post("/api/snapshots/:id/restore", (req, res) => {
+  const r = require("./state/snapshots").restore(req.params.id, Number(req.body.turn));
+  if (!r.ok) return res.status(409).json(r);
+  depsByCampaign.delete(req.params.id); // engines must reload rolled-back files
+  res.json({ ok: true, turn: r.turn });
+});
+
+// POST /api/explain/:id — Phase 14 X3 Explain Mode (manual only). Reconstructs a
+// human-readable "why did this scene happen" from the turn's reasoning artifacts
+// via one optional LLM call (falls back to a rule-based summary in mock mode).
+app.post("/api/explain/:id", async (req, res) => {
+  try {
+    const state = campaignState.load(req.params.id);
+    const lp = state.last_prompt;
+    const perf = (state.perf_log || []).slice(-1)[0] || {};
+    const ss = state.story_structure || {};
+    const facts = [
+      `현재 단계: ${ss.current_stage} (${Math.round((ss.stage_progress || 0) * 100)}%)`,
+      `페이싱 힌트: ${(state.campaign_planner && state.campaign_planner.hint) || "없음"}`,
+      `난이도 힌트: ${(state.difficulty_director && state.difficulty_director.hint) || "없음"}`,
+      `활성 내면 지시: ${(require("./meta/phase7plus").hiddenVariableDirective(state) || []).join(" / ") || "없음"}`,
+    ].join("\n");
+    gemini.setCampaign(req.params.id);
+    let explanation = null;
+    try {
+      if (gemini.hasKey()) explanation = await gemini.summarize("다음은 방금 생성된 TRPG 장면의 내부 연출 근거다. 개발자가 읽기 쉽게 3~4문장으로 왜 이런 장면이 나왔는지 설명하라. 순수 텍스트로만.", facts, "explain");
+    } catch (_) {}
+    if (!explanation) explanation = `이 장면은 ${facts.split("\n").join("; ")} 라는 내부 상태를 바탕으로 연출되었습니다.`;
+    res.json({ explanation, factors: facts, turn: lp && lp.turn });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // POST /api/state/:id/advanced-mode — toggle the Advanced panel (Part D).
@@ -540,7 +583,7 @@ app.post("/api/state/:id/settings", (req, res) => {
     }
   }
   if (b.settings) {
-    for (const k of ["choices_ui", "content_intensity", "recap_hours", "world_event_period", "response_length", "expected_campaign_length", "low_token_mode", "rpd_limit"]) {
+    for (const k of ["choices_ui", "content_intensity", "recap_hours", "world_event_period", "response_length", "expected_campaign_length", "low_token_mode", "rpd_limit", "player_agency_lock"]) {
       if (b.settings[k] !== undefined) state.settings[k] = b.settings[k];
     }
   }
@@ -558,6 +601,12 @@ app.post("/api/state/:id/settings", (req, res) => {
 });
 
 // GET /api/usage/:id — usage/cost monitor (Wave 3).
+// Launcher (global) — aggregated usage across every campaign, read-only.
+app.get("/api/usage", (req, res) => {
+  const agg = usageLog.aggregateAll();
+  res.json({ ...agg, estimated_cost_usd: usageLog.estimateCost(agg) });
+});
+
 app.get("/api/usage/:id", (req, res) => {
   const u = usageLog.load(req.params.id);
   const state = campaignState.load(req.params.id);
@@ -578,6 +627,13 @@ app.get("/api/export/:id", (req, res) => {
     memory: deps.memoryEngine.all(),
     canon: deps.canonDb.all(),
   };
+  // Phase 14 Z — optional gzip for the shareable backup (smaller file on disk).
+  if (req.query.gz === "1") {
+    const gz = require("./util/compress").gzipString(JSON.stringify(bundle));
+    res.setHeader("Content-Type", "application/gzip");
+    res.setHeader("Content-Disposition", `attachment; filename="${id}_backup.json.gz"`);
+    return res.send(gz);
+  }
   res.setHeader("Content-Disposition", `attachment; filename="${id}_backup.json"`);
   res.json(bundle);
 });
@@ -654,6 +710,16 @@ app.post("/api/wizard/characters", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// POST /api/wizard/suggest — B1 per-field AI help. Suggests ONLY the requested
+// field; the wizard form stays empty until the user accepts a suggestion.
+app.post("/api/wizard/suggest", async (req, res) => {
+  try {
+    gemini.setCampaign("wizard");
+    const { field, context } = req.body || {};
+    res.json(await wizardGen.suggestField(field, context || {}));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // POST /api/wizard/create — A3 pipeline: confirmed wizard output → new
 // campaign; every entity goes through kernel canon.register validation.
 app.post("/api/wizard/create", (req, res) => {
@@ -689,6 +755,9 @@ app.post("/api/wizard/create", (req, res) => {
   const TECH_BY_ERA = { sf: "sci_fi", modern: "modern", school: "modern", zombie: "modern", fantasy: "fantasy_low" };
   state.world = state.world || {};
   state.world.tech_level = b.tech_level || TECH_BY_ERA[b.era] || TECH_BY_ERA[b.genre_preset] || "fantasy_low";
+  // C1/C2 — free-text world background + notes, referenced in the GM prompt.
+  if (b.background_description) state.world.background_description = String(b.background_description).slice(0, 4000);
+  if (b.world_notes) state.world.notes = String(b.world_notes).slice(0, 4000);
   // Phase 10 M1 — register the genre-based starting stat (rate-limit exempt).
   require("./game/genreStatPresets").applyPreset(state);
   if (b.player) {
@@ -696,6 +765,7 @@ app.post("/api/wizard/create", (req, res) => {
     state.player.background = b.player.background || null;
     state.player.psychology = b.player.psychology || {};
     if (Array.isArray(b.player.core_values)) state.player.traits = b.player.core_values.slice(0, 5);
+    if (b.player.notes) state.player.notes = String(b.player.notes).slice(0, 4000); // C2
   }
   campaignState.save(state);
   const failed = results.filter((r) => !r.approved);
@@ -776,11 +846,16 @@ app.get("/api/comm/:id", (req, res) => {
 });
 
 // POST /api/comm/:id/read — mark NPC messages read (clears the unread badge).
+// Optional body { sender } marks only that sender's messages read (C7 — opening
+// one conversation in the comm modal). No sender = mark all read.
 app.post("/api/comm/:id/read", (req, res) => {
   const state = campaignState.load(req.params.id);
-  for (const a of state.scheduled_actions || []) if (a.type === "npc_message") a.unread = false;
+  const sender = req.body && req.body.sender;
+  for (const a of state.scheduled_actions || []) {
+    if (a.type === "npc_message" && (!sender || a.payload.sender === sender)) a.unread = false;
+  }
   campaignState.save(state);
-  res.json({ ok: true });
+  res.json({ ok: true, unread_count: (state.scheduled_actions || []).filter((a) => a.type === "npc_message" && a.unread).length });
 });
 
 // POST /api/campaign/:id/letter — send a letter (creates a scheduled_action).
@@ -818,6 +893,11 @@ app.get("/api/worldtab/:id", (req, res) => {
       origin_flag: c.origin_flag, origin_turn: c.origin_turn, linked_events: c.linked_events || [],
     })),
     countdowns: require("./game/countdowns").build(state), // Phase 10 O
+    // PATCH 관계 전환 — surfaced to the notification system (toast + sidebar).
+    relationship_milestones: (state.relationship_milestones || []).map((m) => {
+      const e = deps.canonDb.get(m.npc_ref);
+      return { ...m, npc_name: (e && e.data && e.data.birth_name) || m.npc_ref };
+    }),
   });
 });
 
@@ -844,6 +924,12 @@ app.get("/api/relations/:id", (req, res) => {
       const a = deps.canonDb.get(edge.from), b = deps.canonDb.get(edge.to);
       return a && b && a.data.discovered_by_player && b.data.discovered_by_player;
     }),
+    // PATCH 관계 전환 — "관계 변화 이력" (identity_milestones와 같은 UI 패턴). Adds
+    // each milestone's NPC display name for the frontend.
+    relationship_milestones: (state.relationship_milestones || []).map((m) => {
+      const e = deps.canonDb.get(m.npc_ref);
+      return { ...m, npc_name: (e && e.data && e.data.birth_name) || m.npc_ref };
+    }),
   });
 });
 
@@ -861,6 +947,10 @@ app.delete("/api/campaign/:id", (req, res) => {
     const p = path.join(campaignState.DATA_DIR, `${id}${suffix}.json`);
     if (fs.existsSync(p)) fs.unlinkSync(p);
   }
+  // Phase 13 V8 — also remove long-range snapshot files ({id}_snap_{turn}.json.gz).
+  for (const s of require("./state/snapshots").list(id)) {
+    try { fs.unlinkSync(path.join(campaignState.DATA_DIR, s.file)); } catch (_) {}
+  }
   depsByCampaign.delete(id);
   res.json({ ok: true });
 });
@@ -870,6 +960,22 @@ app.delete("/api/campaign/:id", (req, res) => {
 app.get("/api/keys", (req, res) => res.json(gemini.keysStatus()));
 app.post("/api/keys/reload", (req, res) => res.json({ ok: true, loaded: gemini.reloadKeys(), status: gemini.keysStatus() }));
 
+// C4 — runtime API config (설정 탭 API 섹션): models + UI-entered keys, which
+// override .env and persist across restarts. Key VALUES are never returned.
+app.get("/api/runtime-config", (req, res) => res.json({ ...gemini.getRuntimeConfig(), keys: gemini.keysStatus() }));
+app.post("/api/runtime-config", (req, res) => {
+  const b = req.body || {};
+  const patch = {};
+  if (b.narrative_model) patch.narrative_model = String(b.narrative_model);
+  if (b.extract_model) patch.extract_model = String(b.extract_model);
+  // keys: accept a newline/comma-separated string or an array. Absent = unchanged.
+  if (b.keys !== undefined) {
+    patch.keys = Array.isArray(b.keys) ? b.keys : String(b.keys).split(/[\n,]/);
+  }
+  const cfg = gemini.applyRuntimeConfig(patch);
+  res.json({ ok: true, ...cfg, keys: gemini.keysStatus() });
+});
+
 // GET /api/status — runtime mode.
 app.get("/api/status", (req, res) => {
   res.json({ mock: !gemini.hasKey(), narrative_model: gemini.NARRATIVE_MODEL, extract_model: gemini.EXTRACT_MODEL });
@@ -877,7 +983,102 @@ app.get("/api/status", (req, res) => {
 
 // GET /api/state/:id — full state (used to restore chat on load).
 app.get("/api/state/:id", (req, res) => {
-  res.json(campaignState.load(req.params.id));
+  const state = campaignState.load(req.params.id);
+  // PATCH 관계 전환 — heal missing player↔NPC edges on campaign open so the
+  // relations tab / comm / milestones have data immediately (not only after a
+  // turn). Persist so the next turn's proactive-contact pass sees them too.
+  const deps = getDeps(req.params.id);
+  const added = require("./relationship/relationshipGraph").reconcilePlayerEdges(state, deps.canonDb);
+  if (added.length) campaignState.save(state);
+  res.json(state);
+});
+
+// ==========================================================================
+// Phase 15 — declarative themes (BB) + plugins (CC), both with preview (DD).
+// ==========================================================================
+const themes = require("./theme/themes");
+const plugins = require("./plugins/plugins");
+// A campaign-less Kernel so plugin.register routes through the same validation
+// envelope as every other write (CC3). plugin.register ignores canon/memory/state.
+const globalKernel = createKernel({ canonDb: { get: () => null, all: () => [] }, memoryEngine: { all: () => [] } });
+
+// GET /api/themes — list saved themes.
+app.get("/api/themes", (req, res) => res.json({ themes: themes.load(), allowed_keys: [...themes.ALLOWED_KEYS], allowed_fonts: themes.ALLOWED_FONTS }));
+
+// POST /api/themes/generate — BB3. Free-text → token JSON (validated). NOT saved
+// (DD preview first). Mock/no-key falls back to a deterministic sample.
+app.post("/api/themes/generate", async (req, res) => {
+  try {
+    const desc = String((req.body && req.body.description) || "").slice(0, 500);
+    let tokens = null;
+    if (gemini.hasKey()) {
+      gemini.setCampaign("theme");
+      const prompt = `너는 UI 테마 디자이너다. 아래 설명에 맞는 CSS 변수 값을 JSON으로만 출력하라. 허용 키: ${[...themes.ALLOWED_KEYS].join(", ")}. 색상은 hex, 폰트는 [${themes.ALLOWED_FONTS.join(", ")}] 중에서만, --radius-base는 0~24 숫자(px). 형식: { "tokens": { "--color-bg": "#..." } }`;
+      try { const g = await gemini.generateStructured(prompt, desc, { temperature: 0.4 }); tokens = g && g.tokens; } catch (_) {}
+    }
+    if (!tokens) {
+      // deterministic fallback sample (dark harbor city) so the flow works offline.
+      tokens = { "--color-bg": "#1a1f26", "--color-surface": "#242b33", "--color-text": "#e4e6eb", "--color-accent": "#4a90a4", "--color-danger": "#b0473f", "--font-body": "Noto Serif KR", "--radius-base": "6px" };
+    }
+    const v = themes.validateTokens(tokens);
+    res.json({ tokens: v.tokens, rejected: v.rejected, valid: v.ok, preview: themes.describe(v.tokens), from_description: desc, mock: !gemini.hasKey() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/themes — save a (validated) theme after preview confirmation.
+app.post("/api/themes", (req, res) => {
+  const r = themes.save({ name: (req.body && req.body.name), tokens: (req.body && req.body.tokens) || {}, created_from_description: req.body && req.body.description });
+  if (!r.ok) return res.status(422).json({ error: r.reason, rejected: r.rejected });
+  res.json({ ok: true, theme: r.theme });
+});
+app.delete("/api/themes/:tid", (req, res) => res.json({ themes: themes.remove(req.params.tid) }));
+
+// GET /api/plugins — list registered plugins.
+app.get("/api/plugins", (req, res) => res.json({ plugins: plugins.load(), extension_points: Object.keys(plugins.EXTENSION_POINTS) }));
+
+// POST /api/plugins/generate — CC4. Free-text → manifest (validated, NOT registered).
+app.post("/api/plugins/generate", async (req, res) => {
+  try {
+    const desc = String((req.body && req.body.description) || "").slice(0, 500);
+    let manifest = null;
+    if (gemini.hasKey()) {
+      gemini.setCampaign("plugin");
+      const prompt = `너는 게임 확장 팩 설계자다. 아래 설명에 맞는 플러그인 매니페스트를 JSON으로만 출력하라. extends 배열의 각 항목 type은 [${Object.keys(plugins.EXTENSION_POINTS).join(", ")}] 중 하나만. 형식: { "name": "", "extends": [{ "type": "scene_type", "value": { "id": "", "label": "", "tone_notes": "" } }] }`;
+      try { manifest = await gemini.generateStructured(prompt, desc, { temperature: 0.4 }); } catch (_) {}
+    }
+    if (!manifest) {
+      manifest = { name: desc ? desc.slice(0, 20) + " 팩" : "샘플 팩", extends: [{ type: "scene_type", value: { id: "investigation", label: "조사", tone_notes: "차분하고 관찰적인 묘사, 단서에 집중" } }], created_from_description: desc };
+    }
+    const v = plugins.validateManifest(manifest);
+    res.json({ valid: v.ok, manifest: v.manifest || null, rejected: v.rejected || [], reason: v.reason || null, preview: v.ok ? plugins.describe(v.manifest) : [], mock: !gemini.hasKey() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/plugins — register a manifest through the Kernel (CC3).
+app.post("/api/plugins", (req, res) => {
+  const r = globalKernel.request({ turn_number: 0 }, "settings", "plugin.register", (req.body && req.body.manifest) || req.body);
+  if (!r.approved) return res.status(422).json({ error: r.reason, rejected: (r.patch && r.patch.rejected) || [] });
+  res.json({ ok: true, plugin: r.patch });
+});
+app.post("/api/plugins/:pid/toggle", (req, res) => {
+  const p = plugins.setEnabled(req.params.pid, !!(req.body && req.body.enabled));
+  if (!p) return res.status(404).json({ error: "plugin not found" });
+  res.json({ ok: true, plugin: p });
+});
+app.delete("/api/plugins/:pid", (req, res) => res.json({ plugins: plugins.remove(req.params.pid) }));
+
+// POST /api/campaign/:id/apply-plugin-bundle — apply a plugin's house-rules
+// bundle to this campaign's House Rules (the one extension that lands in state).
+app.post("/api/campaign/:id/apply-plugin-bundle", (req, res) => {
+  const p = plugins.get((req.body && req.body.plugin_id) || "");
+  if (!p) return res.status(404).json({ error: "plugin not found" });
+  const bundles = (p.extends || []).filter((e) => e.type === "house_rules_bundle");
+  if (!bundles.length) return res.status(400).json({ error: "이 플러그인에는 하우스 룰 묶음이 없습니다" });
+  const state = campaignState.load(req.params.id);
+  const added = bundles.flatMap((e) => String(e.value.rules_text || "").split(/\n+/).map((s) => s.trim()).filter(Boolean));
+  state.house_rules = [...(state.house_rules || []), ...added].map((r) => String(r).slice(0, 500)).slice(0, 20);
+  campaignState.save(state);
+  res.json({ ok: true, house_rules: state.house_rules, added });
 });
 
 const PORT = process.env.PORT || 3000;

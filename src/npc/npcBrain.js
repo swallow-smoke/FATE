@@ -26,6 +26,10 @@ function proposeCandidates(state, canonDb, participants) {
     const ent = canonDb.get(ref);
     if (!ent || ent.type !== "Character") continue;
     const d = ent.data || {};
+    // C3 — "플레이어와 연결 없음" NPC는 관계 데이터가 없는 순수 배경 인물이므로
+    // 능동 행동(선제 연락/부탁/대결 등) 후보에서 제외한다. 장면에 등장은 하되
+    // 스스로 플레이어에게 먼저 다가갈 이유가 없다.
+    if (d.no_player_relationship) continue;
     const psy = d.psychology || {};
     const goal = d.goal_current || psy.desire;
     if (!goal) continue;

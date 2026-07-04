@@ -118,7 +118,11 @@ function applyOutcome(emotionState, { primary_emotion, intensity }, turn) {
 // recent_history, or high fatigue) AND a related Foreshadow/Flag must be
 // recoverable now. The full 20-40 turn threshold is proxied by a shorter run
 // so it is actually reachable in playtesting.
-function catharsisReady(emotionState, foreshadowRecoverable) {
+// PATCH 관계 전환 — relationshipTransition is an additional accumulation trigger:
+// a relationship crossing a label boundary is itself an "earned" emotional peak,
+// so it can tip a recoverable moment into Catharsis (still gated on something
+// recoverable, to keep Catharsis from firing on every minor nudge).
+function catharsisReady(emotionState, foreshadowRecoverable, relationshipTransition) {
   if (!foreshadowRecoverable) return false;
   const hist = emotionState.recent_history || [];
   const last = hist[hist.length - 1];
@@ -126,7 +130,7 @@ function catharsisReady(emotionState, foreshadowRecoverable) {
   for (let i = hist.length - 1; i >= 0 && hist[i] === last; i--) run++;
   const fatigueVals = Object.values(emotionState.fatigue_tracker || {});
   const maxFatigue = fatigueVals.length ? Math.max(...fatigueVals) : 0;
-  const accumulated = run >= 4 || maxFatigue >= 4;
+  const accumulated = run >= 4 || maxFatigue >= 4 || !!relationshipTransition;
   return accumulated;
 }
 

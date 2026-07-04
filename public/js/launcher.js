@@ -128,6 +128,11 @@ async function showQuoteBanner(topCampaign) {
 
 // Wave 4 — file import: full backup restore OR world-template-only import.
 function wireLauncher() {
+  // App-wide settings live in their own view (#/settings) — screen/theme,
+  // accessibility, custom themes, API keys, plugins, aggregate usage.
+  $("launcherSettingsBtn").addEventListener("click", () => { location.hash = "#/settings"; });
+  $("lsBack").addEventListener("click", () => { location.hash = "#/"; });
+
   $("sortSel").addEventListener("change", (e) => { launcherSort = e.target.value; renderLauncherGrid(); });
   $("filterSel").addEventListener("change", (e) => { launcherFilter = e.target.value; renderLauncherGrid(); }); // Phase 8 A3
 

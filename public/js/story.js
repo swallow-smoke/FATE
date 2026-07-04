@@ -33,10 +33,16 @@ function addGM(text, turn, date, emotion, intensity, opts) {
   const on = turn != null && bookmarks.includes(turn);
   const badge = `<span class="badge-text">턴 ${turn ?? "?"}${date ? " · " + escapeHtml(date) : ""}</span>
     ${turn != null ? `<button class="bookmark-btn ${on ? "on" : ""}" title="${on ? "북마크 해제" : "이 장면 북마크"}" data-turn="${turn}">★</button>` : ""}`;
+  // A2 — responses are ALWAYS fully expanded by default. The fold control is
+  // kept for long messages but is manual-only (starts expanded); nothing here
+  // auto-collapses a response anymore.
   const long = text.length > 600;
+  // C8 — segmented body (narration blocks + speaker dialogue bubbles).
+  const bodyHtml = renderTurnSegments(text);
   const body = long
-    ? `<div class="gm-body collapsed">${renderNarrative(text)}</div><button class="fold-btn">더 보기</button>`
-    : `<div class="gm-body">${renderNarrative(text)}</div>`;
+    ? `<div class="gm-body">${bodyHtml}</div><button class="fold-btn">접기</button>`
+    : `<div class="gm-body">${bodyHtml}</div>`;
+  d.classList.add("gm-segmented");
   d.innerHTML = `<span class="badge">${badge}</span>${body}`;
   $("log").appendChild(d);
   animatePaperIn(d, 34);
@@ -86,6 +92,7 @@ function scrollLog() { const log = $("log"); log.scrollTop = log.scrollHeight; }
 // Phase 6 G — narrative typing effect (opt-in, off by default).
 function playTypingEffect(el, text) {
   const plain = renderNarrative(text);
+  const finalHtml = renderTurnSegments(text); // C8 — restore segmented view when done
   el.innerHTML = "";
   const tmp = document.createElement("div");
   tmp.innerHTML = plain;
@@ -96,7 +103,7 @@ function playTypingEffect(el, text) {
     i += 3;
     el.textContent = full.slice(0, i);
     if (i < full.length) requestAnimationFrame(step);
-    else { el.innerHTML = plain; el.classList.remove("typing"); }
+    else { el.innerHTML = finalHtml; el.classList.remove("typing"); }
   };
   requestAnimationFrame(step);
 }
@@ -154,6 +161,16 @@ function addDailyCard(daily) {
   const card = document.createElement("div");
   card.className = "daily-card";
   card.innerHTML = `<div class="daily-head">— ${escapeHtml(String(daily.day))}일차의 정리 —</div><div class="daily-body">${renderNarrative(daily.summary)}</div>`;
+  $("log").appendChild(card);
+  animatePaperIn(card, 16);
+}
+
+// Phase 14 Y — "그동안 있었던 일" card after a large time skip / batch offscreen sim.
+function addTimeAccelCard(ta) {
+  if (!ta || !ta.summary) return;
+  const card = document.createElement("div");
+  card.className = "daily-card";
+  card.innerHTML = `<div class="daily-head">— 그동안 있었던 일 (${escapeHtml(String(ta.span_days))}일) —</div><div class="daily-body">${renderNarrative(ta.summary)}</div>`;
   $("log").appendChild(card);
   animatePaperIn(card, 16);
 }
@@ -249,6 +266,7 @@ async function runTurn(text, timeSkip) {
     if (data.legacy_event) addLegacyCard(data.legacy_event);
     if (data.ending) showEndingScreen(data.ending);
     if (data.pending_transition) showTransitionConfirm(data.pending_transition); // Phase 8 C2
+    if (data.time_accel) addTimeAccelCard(data.time_accel); // Phase 14 Y
     if (data.daily_summary) addDailyCard(data.daily_summary); // Phase 10 J2
     renderCountdowns(data.countdowns); // Phase 10 O
     renderChoices(data.narrative);
@@ -265,6 +283,8 @@ async function runTurn(text, timeSkip) {
     renderTrace(NOS.lastTrace);
     refreshCanon();
     flashAutosaved();
+    // C5 — surface any NPC contact that arrived this turn as a toast + sidebar.
+    if (typeof refreshNotifications === "function") refreshNotifications();
   } catch (e) {
     thinking.remove();
     if (e.name !== "AbortError") addSystem("장면을 불러오지 못했습니다. 잠시 후 다시 시도해주세요.");
@@ -296,10 +316,52 @@ async function updateMentionCandidates() {
   if (!NOS.campaign) return;
   try {
     const d = await api("/api/canon/" + NOS.campaign);
-    window._mentionCandidates = (d.entities || [])
-      .filter((e) => e.type === "Character" && e.data && e.data.discovered_by_player)
-      .map((e) => e.data.birth_name || e.canon_id);
-  } catch (e) { window._mentionCandidates = []; }
+    const chars = (d.entities || []).filter((e) => e.type === "Character" && e.data);
+    window._mentionCandidates = chars.filter((e) => e.data.discovered_by_player).map((e) => e.data.birth_name || e.canon_id);
+    // C8 — every named character is a potential dialogue speaker (used to
+    // attribute quotes to a speaker bubble). Longest names first so multi-word
+    // names win over any substring.
+    window._allSpeakers = chars.map((e) => e.data.birth_name).filter(Boolean).sort((a, b) => b.length - a.length);
+  } catch (e) { window._mentionCandidates = []; window._allSpeakers = window._allSpeakers || []; }
+}
+
+// C8 — split a GM turn into narration blocks (no bubble, wide text) and
+// per-speaker dialogue bubbles. Quote-dominated lines become dialogue; a known
+// character name in/near the line attributes the speaker. Monologue parentheses
+// keep their existing style inside narration (util.js inlineMd).
+function speakerHue(name) {
+  let h = 0;
+  for (const c of String(name)) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return h % 360;
+}
+const QUOTE_RE = /[""「『»"]/;
+function quotedFraction(line) {
+  const m = line.match(/["“][^"”]*["”]|「[^」]*」|『[^』]*』/g);
+  if (!m) return 0;
+  return m.join("").length / Math.max(1, line.length);
+}
+function renderTurnSegments(text) {
+  const speakers = window._allSpeakers || [];
+  const playerName = window._playerName || "";
+  const lines = String(text).split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  const out = [];
+  let narr = [];
+  const flush = () => { if (narr.length) { out.push(`<div class="seg narration">${renderNarrative(narr.join("\n\n"))}</div>`); narr = []; } };
+  for (const line of lines) {
+    const looksDialogue = QUOTE_RE.test(line) && (/^\s*["“「『]/.test(line) || quotedFraction(line) >= 0.4);
+    if (!looksDialogue) { narr.push(line); continue; }
+    flush();
+    let sp = null;
+    // Player name first (not a Character canon entity, so not in `speakers`).
+    if (playerName && line.includes(playerName)) sp = playerName;
+    if (!sp) for (const n of speakers) { if (n && line.includes(n)) { sp = n; break; } }
+    const isPlayer = sp && playerName && sp === playerName;
+    const hue = sp ? speakerHue(sp) : 210;
+    const label = sp ? `<span class="sp-name">${escapeHtml(sp)}</span>` : "";
+    out.push(`<div class="seg dialogue${isPlayer ? " by-player" : ""}" style="--sp-hue:${hue}">${label}<div class="sp-line">${inlineMd(escapeHtml(line))}</div></div>`);
+  }
+  flush();
+  return out.join("") || renderNarrative(text);
 }
 
 function handleComposerInput() {
@@ -352,6 +414,9 @@ function submitComposer() {
 
 // ---------- controls ----------
 function wireStoryControls() {
+  // A4 — 런처로 돌아가기 버튼(〈). 이전엔 핸들러가 없어 눌러도 반응이 없었음.
+  const home = $("homeBtn");
+  if (home && !home._wired) { home._wired = true; home.addEventListener("click", () => { location.hash = "#/"; }); }
   $("composer").addEventListener("submit", (e) => { e.preventDefault(); submitComposer(); });
   $("input").addEventListener("input", handleComposerInput);
   $("input").addEventListener("keydown", (e) => {

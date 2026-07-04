@@ -2,7 +2,7 @@
 "use strict";
 
 function showView(name) {
-  ["launcher", "wizard", "game"].forEach((v) => $("view-" + v).classList.toggle("hidden", v !== name));
+  ["launcher", "launcher-settings", "wizard", "game"].forEach((v) => $("view-" + v).classList.toggle("hidden", v !== name));
 }
 
 async function route() {
@@ -11,6 +11,10 @@ async function route() {
     const id = h.slice(4);
     showView("game");
     if (NOS.campaign !== id) await enterCampaign(id);
+  } else if (h === "#/settings") {
+    showView("launcher-settings");
+    NOS.campaign = null;
+    renderLauncherSettings();
   } else if (h === "#/new") {
     showView("wizard");
     if (!maybeResumeWizardDraft()) setWizStep(1); // Phase 7 Part B — draft resume
@@ -29,6 +33,7 @@ async function enterCampaign(id) {
   const s = await api("/api/state/" + id);
   NOS.settingsCache = s.settings || {};
   NOS.playerStats = (s.player && s.player.stats) || {}; // Phase 10 H — choice hints
+  window._playerName = (s.player && s.player.name) || ""; // C8 — speaker attribution
   refreshAdvancedButton(!!(s.settings && s.settings.advanced_mode)); // Phase 7 Part D
   const displayName = (s.meta && (s.meta.display_name || s.meta.world_name)) || id;
   $("campTitle").textContent = `${(s.meta && s.meta.icon) || "📖"} ${displayName}`;
@@ -40,10 +45,10 @@ async function enterCampaign(id) {
   }
   addSystem(`캠페인 "${displayName}" 로드됨 · 현재 턴 ${s.turn_number}.`);
   window._bookmarkedTurns = s.bookmarked_turns || [];
+  await updateMentionCandidates(); // C8 — load speaker list before replaying history
   (s.recent_dialogue || []).forEach((r) => { addPlayer(r.player); addGM(r.gm, r.turn + 1, r.in_world_date, NOS.emotion.name, NOS.emotion.intensity, { skipKinetic: true }); });
   renderProgress(s.story_structure);
   applyDnaTheme(s.narrative_dna);
-  updateMentionCandidates();
   if (s.ending && s.ending.reached && s.ending.summary) showEndingScreen(s.ending.summary);
 
   // dev panel hydration
@@ -65,6 +70,9 @@ async function enterCampaign(id) {
   } catch (e) { $("undoBtn").disabled = true; $("regenBtn").disabled = true; }
   maybeShowRecap();
 
+  // C5/C6 — load notifications silently on enter (no toast burst for old items).
+  refreshNotifications({ silent: true });
+
   // return to story tab
   document.querySelector('.ptab[data-ptab="story"]').click();
 }
@@ -75,6 +83,7 @@ document.addEventListener("DOMContentLoaded", () => {
   wireDevPanel();
   wireStoryControls();
   wirePlayerTabs();
+  wireNotifications(); // C5/C6/C7
   wireAdvanced();
   wireLauncher();
   wireWizard();

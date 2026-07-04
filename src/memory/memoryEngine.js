@@ -59,11 +59,17 @@ function createMemoryEngine(campaignId) {
       tier = mem.tier;
     }
 
+    // Phase 13 (extra) — Memory Importance Scoring. Set once at creation from
+    // tier + emotion intensity (0..1). Distinct from retrieval relevance: this
+    // informs compression/archival priority (keep high-importance longer).
+    const importance = Math.min(1, (tier / 5) * 0.6 + Math.min(emotionIntensity, 5) / 5 * 0.4);
+
     const obj = {
       _seq: seq,
       id: `mem_${String(seq).padStart(7, "0")}`,
       tier,
       type: TIER_NAME[tier].toLowerCase(),
+      importance: Math.round(importance * 100) / 100,
       summary: mem.summary || "",
       participants,
       location: mem.location || null,

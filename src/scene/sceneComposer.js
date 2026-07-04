@@ -40,6 +40,13 @@ function compose(inputs) {
     allowed = ["catharsis"];
     intensity = Math.max(4, intensity);
     note = "catharsis condition met -> Catharsis";
+  } else if (sd.relationship_transition_pending) {
+    // PATCH 관계 전환 (step 3) — a looming relationship transition must land as a
+    // scene with weight, not a throwaway line. Prefer Bond (Catharsis stays gated
+    // above); raise the intensity target so it is treated as a real beat.
+    allowed = ["bond", "reflection"];
+    intensity = Math.max(3, intensity);
+    note = `relationship transition pending (${sd.relationship_transition_pending.npc_ref}) -> Bond, intensity>=3`;
   } else if (debate.occurred && debate.decision.allowed) {
     allowed = [...debate.decision.allowed];
     if (debate.decision.intensity_target != null) intensity = debate.decision.intensity_target;

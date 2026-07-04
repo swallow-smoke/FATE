@@ -86,6 +86,10 @@ function newCampaign(campaignId) {
     // Phase 3 · NPC-NPC Relationship Graph (Wave 1)
     relationship_graph: { edges: [] },
 
+    // PATCH 관계 전환 — player↔NPC label transitions detected at extraction time.
+    // { milestone_id, npc_ref, turn, from_label, to_label, trigger_summary }
+    relationship_milestones: [],
+
     // Phase 3 · Theme Director (Wave 2)
     theme: { active_theme: null, theme_progress: 0, theme_history: [], weight_in_scene_selection: 0.3 },
 
@@ -140,6 +144,9 @@ function newCampaign(campaignId) {
       content_intensity: "medium", // low | medium | high
       recap_hours: 6, // show session recap if away >= N hours
       response_length: "normal", // short | normal | long — Phase 6 A
+      // C9 — 플레이어 캐릭터 행동 대리 금지 (기본 켜짐). 켜지면 GM은 플레이어
+      // 캐릭터의 행동/대사/선택을 임의로 서술하지 않고 상황·NPC 반응까지만 서술한다.
+      player_agency_lock: true,
     },
 
     db_refs: {
@@ -184,6 +191,7 @@ function migrate(state) {
   if (state.player) {
     if (!state.player.stats) state.player.stats = d.player.stats;
     if (!state.player.identity_milestones) state.player.identity_milestones = [];
+  if (!state.relationship_milestones) state.relationship_milestones = [];
   }
   for (const [k, v] of Object.entries(d.settings)) {
     if (state.settings[k] === undefined) state.settings[k] = v;

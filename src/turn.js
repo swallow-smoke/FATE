@@ -11,9 +11,18 @@
 const { produceDirective, applyOutcome, catharsisReady } = require("./emotion/emotionEngine");
 const promptBlocks = require("./gemini/promptBlocks");
 const gemini = require("./gemini/geminiClient");
-const { EXTRACTION_SYSTEM_PROMPT } = require("./gemini/systemPromptBase");
+const { EXTRACTION_SYSTEM_PROMPT, SYSTEM_PROMPT_BASE, CONTENT_INTENSITY_LINES, PROMPT_VERSION } = require("./gemini/systemPromptBase");
+const contextOptimizer = require("./gemini/contextOptimizer"); // Phase 13 V4/V5
+const tokenBudget = require("./gemini/tokenBudget"); // Phase 13 V3
+const contextCache = require("./gemini/contextCache"); // Phase 13 V1/V2
+const scheduleConfig = require("./meta/scheduleConfig"); // Phase 13 V9
+const snapshots = require("./state/snapshots"); // Phase 13 V8
+const incrementalState = require("./state/incrementalState"); // Phase 13 V7
+const integrityWatch = require("./meta/integrityWatch"); // Phase 14 W1/W2
+const timeAccel = require("./meta/timeAccel"); // Phase 14 Y
 const worldSim = require("./world/worldSimulation");
 const relationshipGraph = require("./relationship/relationshipGraph");
+const relationshipLabel = require("./relationship/relationshipLabel");
 const livingNpc = require("./npc/livingNpc");
 const themeDirector = require("./directors/themeDirector");
 const rhythmDirector = require("./directors/rhythmDirector");
@@ -41,6 +50,22 @@ const APPEARANCE_WINDOW = 10; // "recently appeared" = within the last N turns
 
 // Minimal Story Director (Phase 2 step 1). NOT the full spec (no Act structure
 // / foreshadow planting) — it only makes location-present NPCs enter scenes and
+// PATCH 관계 전환 (step 3) — detect a looming player↔NPC relationship transition
+// BEFORE the narrative is written: a scene participant whose current edge sits on
+// a label boundary (a small shift would flip the label). Returns { npc_ref,
+// current_label } or null. "연결 없음" world-figures are skipped.
+function detectPendingRelationshipTransition(state, canonDb, participants) {
+  for (const ref of participants || []) {
+    const ent = canonDb.get(ref);
+    if (!ent || ent.type !== "Character" || (ent.data && ent.data.no_player_relationship)) continue;
+    const edge = relationshipGraph.playerEdge(state, ref);
+    if (edge && relationshipLabel.nearBoundary(edge)) {
+      return { npc_ref: ref, current_label: relationshipLabel.labelOf(edge) };
+    }
+  }
+  return null;
+}
+
 // surfaces a near-deadline foreshadow. urgency is fixed "medium" for now.
 function proposeStoryDirective(state, canonDb) {
   const chars = canonDb.all().filter((e) => e.type === "Character");
@@ -181,11 +206,17 @@ function pickSentimentalEcho(state, memoryEngine) {
 async function runTurn(deps, state, playerInput, options = {}) {
   const { kernel, canonDb, memoryEngine } = deps;
   const trace = {};
+  const tTurnStart = Date.now(); // Phase 14 X2 — AI Profiler
   const lowToken = !!(state.settings && state.settings.low_token_mode); // Phase 12 U3
 
   // Phase 5 Wave 1 — Undo: snapshot the on-disk stores BEFORE any mutation.
   undo.snapshot(state.campaign_id);
   gemini.setCampaign(state.campaign_id); // usage accounting context
+
+  // PATCH 관계 전환 — self-heal player↔NPC edges for every met NPC (including
+  // ones the story introduced after creation, and pre-patch campaigns that had
+  // none). Without this, relationships/milestones/NPC contact have no data.
+  trace.reconciled_edges = relationshipGraph.reconcilePlayerEdges(state, canonDb);
 
   // Phase 5 Wave 1 — time skip: advance the in-world calendar before the scene.
   const prevDay = state.in_world_day || 1; // Phase 10 J2 — detect day rollover
@@ -193,6 +224,10 @@ async function runTurn(deps, state, playerInput, options = {}) {
     const mult = { 시간: 0, 일: 1, 주: 7, 년: 365 }[options.time_skip.unit] ?? 1;
     state.in_world_day = (state.in_world_day || 1) + Math.round(options.time_skip.amount * mult);
     state.in_world_date = `${state.in_world_day}일차`;
+    // Phase 14 Y — batch-simulate the offscreen world for a large skip instead
+    // of ticking it turn-by-turn. Disabled under low-token mode.
+    const skippedDays = state.in_world_day - prevDay;
+    trace.time_accel = timeAccel.run(state, deps, { days: skippedDays, lowToken });
   }
 
   // Phase 4 B1 — dice/skill check for genuinely uncertain player actions.
@@ -246,10 +281,16 @@ async function runTurn(deps, state, playerInput, options = {}) {
 
   const storyDirective = proposeStoryDirective(state, canonDb);
   storyDirective.npc_candidates = [...(storyDirective.npc_candidates || []), ...letterResult.directive_candidates];
+  // PATCH 관계 전환 (step 3) — flag a looming relationship transition so the Scene
+  // Composer weights this scene toward Bond/Catharsis instead of letting the
+  // moment slip by in a single line.
+  storyDirective.relationship_transition_pending = detectPendingRelationshipTransition(state, canonDb, storyDirective.participants);
   // Catharsis gate (EmotionEngine §6): accumulation + recoverable foreshadow.
+  // A pending relationship transition also counts as an accumulation trigger.
   storyDirective.catharsis_ready = catharsisReady(
     state.player.emotion_state,
-    storyDirective.foreshadow_refs.length > 0
+    storyDirective.foreshadow_refs.length > 0,
+    !!storyDirective.relationship_transition_pending
   );
   const sbResp = kernel.request(state, "story_director", "story.beat", storyDirective);
 
@@ -281,6 +322,7 @@ async function runTurn(deps, state, playerInput, options = {}) {
   sceneSpec.difficulty_hint = (state.difficulty_director && state.difficulty_director.hint) || null;
   sceneSpec.planner_hint = (state.campaign_planner && state.campaign_planner.hint) || null;
   sceneSpec.npc_candidates = storyDirective.npc_candidates || [];
+  sceneSpec.relationship_transition = storyDirective.relationship_transition_pending || null; // PATCH 관계 전환 step 3
   // A4 — a Discovery scene surfaces the next hidden clue.
   sceneSpec.mystery_hint = (sceneSpec.scene_type || []).includes("discovery") ? mystery.discoveryHint(state) : null;
   // Phase 11 R — sentimental item echo: if the player carries a "sentimental"
@@ -310,12 +352,17 @@ async function runTurn(deps, state, playerInput, options = {}) {
 
   // Canon filter (CanonDatabase §7): entities for scene participants + refs.
   const canonRefs = [...(sceneSpec.participants || []), ...(sceneSpec.canon_refs || [])];
-  const canonUsed = canonDb.relevantTo(canonRefs);
+  const canonUsed = canonDb.relevantTo(canonRefs); // participants+refs (used for discovery/memory)
   trace.canon_used = canonUsed.map((e) => e.canon_id);
 
   // --- Step 9: Assemble the full system prompt (4 blocks + recent) -------
-  const systemPrompt = promptBlocks.assembleSystemPrompt({
-    canon: canonUsed,
+  // Phase 13 V4 — Dynamic LOD: full for scene, medium for recently-mentioned.
+  const { entities: canonForPrompt, lod: canonLod } = contextOptimizer.selectCanon(state, canonDb, sceneSpec);
+  // Phase 13 V5 — Delta: mark unchanged Canon/Memory items as "(이전과 동일)".
+  const canonUnchanged = contextOptimizer.unchangedIds(state, "canon", promptBlocks.renderCanonLines(canonForPrompt, canonLod));
+  const memoryUnchanged = contextOptimizer.unchangedIds(state, "memory", promptBlocks.renderMemoryLines(retrieved));
+  const assembled = promptBlocks.assembleSystemPrompt({
+    canon: canonForPrompt,
     memory: retrieved,
     emotion: emotionDirective,
     scene: sceneSpec,
@@ -323,15 +370,55 @@ async function runTurn(deps, state, playerInput, options = {}) {
     houseRules: state.house_rules,
     contentIntensity: state.settings && state.settings.content_intensity,
     responseLength: state.settings && state.settings.response_length,
+    // C9 — default ON when unset (older saves migrate without the flag).
+    playerAgencyLock: !state.settings || state.settings.player_agency_lock !== false,
+    // C1/C2 — creation-time background + free-text notes.
+    setupNotes: {
+      background: state.world && state.world.background_description,
+      worldNotes: state.world && state.world.notes,
+      playerNotes: state.player && state.player.notes,
+    },
+    optimize: { canonLod, canonUnchanged, memoryUnchanged, allocation: tokenBudget.DEFAULT_ALLOCATION }, // V3/V4/V5
   });
+  const systemPrompt = assembled.prompt;
   trace.system_prompt = systemPrompt;
+  // Phase 13 V3 — record the token-budget breakdown for the Advanced panel.
+  state.prompt_profile = state.prompt_profile || {};
+  state.prompt_profile.prompt_version = PROMPT_VERSION; // prompt versioning (extra)
+  tokenBudget.record(state, { total_budget: tokenBudget.DEFAULT_TURN_BUDGET, used: assembled.tokens_estimate, by_block: tokenBudget.DEFAULT_ALLOCATION, trimmed: assembled.trims });
+  // Phase 13 V1/V2 — Context Cache: evaluate the static block's cache state.
+  const staticBlock = [SYSTEM_PROMPT_BASE, CONTENT_INTENSITY_LINES[(state.settings && state.settings.content_intensity) || "medium"], (state.house_rules || []).join("|"), PROMPT_VERSION].join("\n");
+  trace.context_cache = contextCache.evaluate(state.campaign_id, staticBlock);
+  state.prompt_profile.context_cache = { key: trace.context_cache.key, reason: trace.context_cache.reason, hit: trace.context_cache.hit };
+  // Phase 14 X1 — keep the last full prompt for the Prompt Viewer.
+  state.last_prompt = { turn: state.turn_number, system_prompt: systemPrompt, player_input: playerInput };
 
   // --- Step 10: Gemini narrative call ------------------------------------
-  const narrative = await gemini.generateNarrative(systemPrompt, playerInput);
+  const tNarr = Date.now();
+  let narrative = await gemini.generateNarrative(systemPrompt, playerInput);
+  const msNarrative = Date.now() - tNarr;
 
   // --- Step 11: Post-process extraction -> Memory/Canon/Flag -------------
-  const extraction = await gemini.extractFacts(EXTRACTION_SYSTEM_PROMPT, narrative);
+  const tExtract = Date.now();
+  let extraction = await gemini.extractFacts(EXTRACTION_SYSTEM_PROMPT, narrative);
+  let msExtraction = Date.now() - tExtract;
+
+  // Phase 14 W1/W2 — integrity watchdog. On a HIGH-severity issue (contradiction,
+  // voice break, dead-character reappearance) regenerate the narrative ONCE with
+  // the problem named, then re-extract. Low/medium are logged only.
+  const watch = integrityWatch.evaluate(state, canonDb, { narrative, extraction });
+  if (watch.regenerate) {
+    const stricter = systemPrompt + `\n\n[재요청] 직전 서사에 서사 무결성 문제가 있었습니다: ${watch.reason}\n이 문제를 바로잡아 Canon/설정과 일관되게 다시 서술하세요.`;
+    narrative = await gemini.generateNarrative(stricter, playerInput);
+    const t2 = Date.now();
+    extraction = await gemini.extractFacts(EXTRACTION_SYSTEM_PROMPT, narrative);
+    msExtraction += Date.now() - t2;
+    trace.watchdog_regen = { reason: watch.reason };
+  }
   trace.extraction = extraction;
+  // Re-evaluate on the (possibly regenerated) narrative, then commit the log.
+  const finalWatch = watch.regenerate ? integrityWatch.evaluate(state, canonDb, { narrative, extraction }) : watch;
+  trace.integrity = integrityWatch.commit(state, finalWatch);
 
   const applied = { memories: [], canon: [], flags: [] };
   const writtenMemories = []; // full objects, for consequence-chain linking
@@ -394,6 +481,34 @@ async function runTurn(deps, state, playerInput, options = {}) {
     });
     if (!state.player.traits.includes(extraction.identity_shift.to_trait)) {
       state.player.traits.push(extraction.identity_shift.to_trait);
+    }
+  }
+
+  // PATCH 관계 전환 — apply this turn's player↔NPC relationship deltas, then
+  // detect any that crossed a qualitative-label boundary (예: "가까운 사이" →
+  // "연인"급 라벨). Local label mapping only — no extra LLM call. Milestones are
+  // recorded ONLY when the label actually changes (수치만 소폭 변한 건 무시), and
+  // never for "연결 없음" world-figures.
+  trace.relationship_milestones = [];
+  for (const rc of extraction.relationship_changes || []) {
+    const ref = rc && rc.npc_ref;
+    const deltas = rc && rc.dimension_deltas;
+    if (!ref || !deltas || !canonDb.get(ref)) continue;
+    const ent = canonDb.get(ref);
+    if (ent.type !== "Character" || (ent.data && ent.data.no_player_relationship)) continue; // C3 respect
+    const before = relationshipLabel.labelOf(relationshipGraph.playerEdge(state, ref));
+    relationshipGraph.applyPlayerDelta(state, ref, deltas, { summary: rc.summary });
+    const after = relationshipLabel.labelOf(relationshipGraph.playerEdge(state, ref));
+    if (after !== before) {
+      state.relationship_milestones = state.relationship_milestones || [];
+      const ms = {
+        milestone_id: "rms_" + String((state.relationship_milestones.length + 1)).padStart(4, "0"),
+        npc_ref: ref, turn: state.turn_number,
+        from_label: before, to_label: after,
+        trigger_summary: rc.summary || (extraction.new_memories && extraction.new_memories[0] && extraction.new_memories[0].summary) || "",
+      };
+      state.relationship_milestones.push(ms);
+      trace.relationship_milestones.push(ms);
     }
   }
 
@@ -537,8 +652,22 @@ async function runTurn(deps, state, playerInput, options = {}) {
   // C2 — persist any staged transition so the confirm endpoint can act on it.
   state.pending_legacy_transition = pendingTransition || null;
 
+  // Phase 14 X2 — AI Profiler: per-stage timing (bounded log). Gemini calls
+  // dominate; this exists to catch abnormal Memory/State cost as a save grows.
+  state.perf_log = [
+    ...(state.perf_log || []),
+    { turn: state.turn_number, narrative_ms: msNarrative, extraction_ms: msExtraction, total_ms: Date.now() - tTurnStart, memory_count: memoryEngine.all().length, canon_count: canonDb.all().length },
+  ].slice(-40);
+
   state.turn_number += 1;
+  // Phase 13 V7 — record which top-level fields changed this turn (change journal).
+  incrementalState.record(state);
   require("./state/campaignState").save(state);
+
+  // Phase 13 V8 — periodic full snapshot (every full_state_snapshot cadence),
+  // keeping only the newest few. Resets the incremental baseline.
+  const snap = snapshots.maybeSnapshot(state, deps);
+  if (snap) { incrementalState.resetBaseline(state); trace.snapshot = snap; require("./state/campaignState").save(state); }
 
   return {
     narrative, trace, turn: state.turn_number, legacy_event: legacyEvent,
@@ -546,6 +675,7 @@ async function runTurn(deps, state, playerInput, options = {}) {
     ending: endingSummary,
     pending_transition: pendingTransition || null, // Phase 8 C2
     daily_summary: dailySummary, // Phase 10 J2
+    time_accel: trace.time_accel || null, // Phase 14 Y — "그동안 있었던 일" card
   };
 }
 

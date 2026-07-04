@@ -38,10 +38,20 @@ function load(campaignId) {
   try { const u = JSON.parse(fs.readFileSync(p, "utf8")); u.by_category = u.by_category || {}; u.daily = u.daily || {}; return u; } catch { return blank(campaignId); }
 }
 
-function record({ campaign_id, model, kind, prompt_tokens, output_tokens }) {
+// Phase 14 X4 — LLM Recorder ring size (recent prompt/response snapshots).
+const RECORDER_LIMIT = 20;
+function trunc(s, n = 6000) { s = String(s || ""); return s.length > n ? s.slice(0, n) + "…(truncated)" : s; }
+
+function record({ campaign_id, model, kind, prompt_tokens, output_tokens, prompt_snapshot, response_snapshot, full_record }) {
   if (!campaign_id) return;
   const u = load(campaign_id);
   u.calls += 1;
+  // Phase 14 X4 — keep recent prompt/response snapshots for the LLM Recorder.
+  // Default: newest RECORDER_LIMIT only; full_record (opt-in) keeps everything.
+  if (prompt_snapshot !== undefined || response_snapshot !== undefined) {
+    u.recent_calls = [...(u.recent_calls || []), { ts: new Date().toISOString(), kind, category: categoryOf(kind), model, prompt: trunc(prompt_snapshot), response: trunc(response_snapshot) }];
+    if (!full_record) u.recent_calls = u.recent_calls.slice(-RECORDER_LIMIT);
+  }
   u.prompt_tokens += prompt_tokens;
   u.output_tokens += output_tokens;
   const k = (u.by_kind[kind] = u.by_kind[kind] || { calls: 0, prompt_tokens: 0, output_tokens: 0 });
@@ -70,6 +80,34 @@ function todaySummary(usage, rpdLimit) {
   return { ...day, limit, pct, warn: pct != null && pct >= 80 };
 }
 
+// Launcher (global, no campaign context) — sum every campaign's usage log into
+// one aggregate. Merges cumulative totals, by_category, and today's call_count
+// across all campaigns. Display-only (no RPD limit — that stays per-campaign).
+function aggregateAll() {
+  const agg = { calls: 0, prompt_tokens: 0, output_tokens: 0, by_model: {}, by_category: {}, today_calls: 0, campaign_count: 0 };
+  const d = today();
+  let files = [];
+  try { files = fs.readdirSync(DATA_DIR).filter((f) => f.endsWith("_usage.json")); } catch { files = []; }
+  for (const f of files) {
+    const id = f.slice(0, -"_usage.json".length);
+    const u = load(id);
+    agg.campaign_count += 1;
+    agg.calls += u.calls || 0;
+    agg.prompt_tokens += u.prompt_tokens || 0;
+    agg.output_tokens += u.output_tokens || 0;
+    for (const [model, m] of Object.entries(u.by_model || {})) {
+      const t = (agg.by_model[model] = agg.by_model[model] || { calls: 0, prompt_tokens: 0, output_tokens: 0 });
+      t.calls += m.calls || 0; t.prompt_tokens += m.prompt_tokens || 0; t.output_tokens += m.output_tokens || 0;
+    }
+    for (const [cat, c] of Object.entries(u.by_category || {})) {
+      const t = (agg.by_category[cat] = agg.by_category[cat] || { calls: 0, prompt_tokens: 0, output_tokens: 0 });
+      t.calls += c.calls || 0; t.prompt_tokens += c.prompt_tokens || 0; t.output_tokens += c.output_tokens || 0;
+    }
+    agg.today_calls += (u.daily && u.daily[d] && u.daily[d].call_count) || 0;
+  }
+  return agg;
+}
+
 function estimateCost(usage) {
   let usd = 0;
   for (const [model, m] of Object.entries(usage.by_model || {})) {
@@ -79,4 +117,4 @@ function estimateCost(usage) {
   return Math.round(usd * 10000) / 10000;
 }
 
-module.exports = { load, record, estimateCost, todaySummary, categoryOf, usagePath };
+module.exports = { load, record, estimateCost, todaySummary, categoryOf, usagePath, aggregateAll };

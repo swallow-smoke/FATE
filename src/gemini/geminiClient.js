@@ -8,9 +8,22 @@
 // full turn loop can still be verified end-to-end.
 
 const API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models";
+const fs = require("fs");
+const path = require("path");
 
-const NARRATIVE_MODEL = process.env.GEMINI_NARRATIVE_MODEL || "gemini-2.5-pro";
-const EXTRACT_MODEL = process.env.GEMINI_EXTRACT_MODEL || "gemini-2.5-flash";
+// C4 — models are mutable so the 설정 탭 API 섹션 can override them at runtime.
+// The runtime config (models + optional API keys entered in the UI) is persisted
+// to data/runtime_config.json and loaded on boot; it takes precedence over .env.
+let NARRATIVE_MODEL = process.env.GEMINI_NARRATIVE_MODEL || "gemini-2.5-pro";
+let EXTRACT_MODEL = process.env.GEMINI_EXTRACT_MODEL || "gemini-2.5-flash";
+
+// C4 — allowed model options exposed as a dropdown in the settings UI.
+const AVAILABLE_MODELS = [
+  "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite",
+  "gemini-3.1-flash", "gemini-3.1-flash-lite", "gemini-3.1-pro",
+];
+let RUNTIME_KEYS = []; // keys entered via the settings UI (override/augment env)
+const RUNTIME_CONFIG_PATH = path.join(__dirname, "..", "..", "data", "runtime_config.json");
 
 // Phase 8 D1 — API key pool + quota-aware rotation. Keys come from the
 // environment only (never persisted to state or logs, per the handoff): a
@@ -20,6 +33,8 @@ const EXTRACT_MODEL = process.env.GEMINI_EXTRACT_MODEL || "gemini-2.5-flash";
 function loadKeyPool() {
   const pool = [];
   const push = (k) => { if (k && !pool.some((p) => p.key === k)) pool.push({ key: k.trim(), quota_exhausted_until: null }); };
+  // C4 — UI-entered keys come first (highest precedence), then env keys.
+  RUNTIME_KEYS.forEach(push);
   (process.env.GEMINI_API_KEYS || "").split(",").forEach(push);
   push(process.env.GEMINI_API_KEY);
   for (let i = 2; i <= 6; i++) push(process.env[`GEMINI_API_KEY_${i}`]);
@@ -27,6 +42,44 @@ function loadKeyPool() {
 }
 let KEY_POOL = loadKeyPool();
 function reloadKeys() { KEY_POOL = loadKeyPool(); return KEY_POOL.length; }
+
+// C4 — persist + load runtime config (models + UI keys). Keys are stored here
+// because the user explicitly entered them in the app (overrides the env-only
+// rule by design); the data/ dir is gitignored.
+function loadRuntimeConfig() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(RUNTIME_CONFIG_PATH, "utf8"));
+    if (raw.narrative_model) NARRATIVE_MODEL = raw.narrative_model;
+    if (raw.extract_model) EXTRACT_MODEL = raw.extract_model;
+    if (Array.isArray(raw.keys)) RUNTIME_KEYS = raw.keys.filter(Boolean);
+    KEY_POOL = loadKeyPool();
+  } catch (e) { /* no runtime config yet — env defaults stand */ }
+}
+function saveRuntimeConfig() {
+  try {
+    fs.mkdirSync(path.dirname(RUNTIME_CONFIG_PATH), { recursive: true });
+    fs.writeFileSync(RUNTIME_CONFIG_PATH, JSON.stringify({ narrative_model: NARRATIVE_MODEL, extract_model: EXTRACT_MODEL, keys: RUNTIME_KEYS }, null, 2));
+  } catch (e) { /* best-effort persistence */ }
+}
+// applyRuntimeConfig({ narrative_model, extract_model, keys }) — partial patch.
+// keys: full replacement array of UI-entered keys (null/undefined = leave as-is).
+function applyRuntimeConfig(patch) {
+  const p = patch || {};
+  if (p.narrative_model && AVAILABLE_MODELS.includes(p.narrative_model)) NARRATIVE_MODEL = p.narrative_model;
+  if (p.extract_model && AVAILABLE_MODELS.includes(p.extract_model)) EXTRACT_MODEL = p.extract_model;
+  if (Array.isArray(p.keys)) RUNTIME_KEYS = p.keys.map((k) => String(k).trim()).filter(Boolean);
+  KEY_POOL = loadKeyPool();
+  saveRuntimeConfig();
+  return getRuntimeConfig();
+}
+// Never returns key VALUES — only how many UI keys are set.
+function getRuntimeConfig() {
+  return {
+    narrative_model: NARRATIVE_MODEL, extract_model: EXTRACT_MODEL,
+    available_models: AVAILABLE_MODELS, ui_key_count: RUNTIME_KEYS.length,
+  };
+}
+loadRuntimeConfig();
 
 function availableKey() {
   const now = Date.now();
@@ -56,6 +109,9 @@ function keysStatus() {
 // appends each call's token counts to the per-campaign usage log.
 let usageListener = null;
 function setUsageListener(fn) { usageListener = fn; }
+// Phase 14 X4 — opt-in unlimited recorder (default: keep only newest 20).
+let fullRecord = false;
+function setFullRecord(v) { fullRecord = !!v; }
 // The current campaign is set by the turn/wizard entry points so deep call
 // sites don't need to thread it through.
 let currentCampaign = null;
@@ -103,6 +159,7 @@ async function callGemini(model, systemPrompt, userText, generationConfig, kind 
       throw lastErr;
     }
     const data = await res.json();
+    const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") || "";
     if (usageListener && data.usageMetadata) {
       try {
         usageListener({
@@ -111,10 +168,13 @@ async function callGemini(model, systemPrompt, userText, generationConfig, kind 
           kind,
           prompt_tokens: data.usageMetadata.promptTokenCount || 0,
           output_tokens: data.usageMetadata.candidatesTokenCount || 0,
+          // Phase 14 X4 — LLM Recorder snapshots (prompt + response).
+          prompt_snapshot: `${systemPrompt}\n\n[USER]\n${userText}`,
+          response_snapshot: text,
+          full_record: fullRecord,
         });
       } catch (e) { /* accounting must never break a turn */ }
     }
-    const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") || "";
     return text.trim();
   }
   throw lastErr || new Error("Gemini call failed after retries");
@@ -185,30 +245,54 @@ async function extractFacts(extractionSystemPrompt, narrativeText) {
     }, "extraction");
     return parseExtraction(raw);
   } catch (e) {
-    return { new_memories: [], canon_updates: [], flag_changes: [], _error: e.message };
+    return { ...EMPTY_EXTRACTION(), _error: e.message };
   }
 }
 
+// Phase 13 V6 — Deterministic Validator. The extraction response is assumed
+// valid JSON, but models occasionally wrap it, prepend prose, or truncate.
+// Recovery ladder: (1) parse as-is, (2) strip ```json fences, (3) slice from
+// the first { to the last }. If all fail, return the empty schema with a
+// _parse_error flag — the turn continues (this turn simply isn't remembered).
+const EMPTY_EXTRACTION = () => ({
+  new_memories: [], canon_updates: [], flag_changes: [], item_gains: [], item_uses: [],
+  identity_shift: null, new_dynamic_trait_candidate: null, integrity_issues: [], proper_nouns: [],
+  relationship_changes: [], // PATCH 관계 전환
+});
+function normalizeExtraction(parsed) {
+  const e = EMPTY_EXTRACTION();
+  return {
+    ...e,
+    new_memories: parsed.new_memories || [],
+    canon_updates: parsed.canon_updates || [],
+    flag_changes: parsed.flag_changes || [],
+    item_gains: parsed.item_gains || [],
+    item_uses: parsed.item_uses || [],
+    identity_shift: parsed.identity_shift || null,
+    new_dynamic_trait_candidate: parsed.new_dynamic_trait_candidate || null, // Phase 9 F2
+    integrity_issues: parsed.integrity_issues || [], // Phase 14 W1
+    proper_nouns: parsed.proper_nouns || [],         // Phase 14 W2
+    relationship_changes: parsed.relationship_changes || [], // PATCH 관계 전환
+  };
+}
 function parseExtraction(raw) {
-  let text = raw.trim();
-  // strip ```json fences if present
+  const attempts = [];
+  const text = String(raw || "").trim();
+  attempts.push(text);
   const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fence) text = fence[1].trim();
-  try {
-    const parsed = JSON.parse(text);
-    return {
-      new_memories: parsed.new_memories || [],
-      canon_updates: parsed.canon_updates || [],
-      flag_changes: parsed.flag_changes || [],
-      item_gains: parsed.item_gains || [],
-      item_uses: parsed.item_uses || [],
-      identity_shift: parsed.identity_shift || null,
-      new_dynamic_trait_candidate: parsed.new_dynamic_trait_candidate || null, // Phase 9 F2
-    };
-  } catch (e) {
-    // Extraction is best-effort; a parse failure must not break the turn.
-    return { new_memories: [], canon_updates: [], flag_changes: [], item_gains: [], item_uses: [], identity_shift: null, _parse_error: e.message, _raw: raw };
+  if (fence) attempts.push(fence[1].trim());
+  const first = text.indexOf("{"), last = text.lastIndexOf("}");
+  if (first >= 0 && last > first) attempts.push(text.slice(first, last + 1));
+  let lastErr = null;
+  for (let i = 0; i < attempts.length; i++) {
+    try {
+      const parsed = JSON.parse(attempts[i]);
+      const out = normalizeExtraction(parsed);
+      if (i > 0) out._recovered = true; // needed a fallback step
+      return out;
+    } catch (e) { lastErr = e; }
   }
+  return { ...EMPTY_EXTRACTION(), _parse_error: lastErr ? lastErr.message : "unparseable", _raw: raw };
 }
 
 // --- MOCK implementations (no API key) -----------------------------------
@@ -226,13 +310,18 @@ function mockExtraction(narrativeText) {
   // life-changing keywords, so the rate-limit / dedup paths are testable without
   // a live model (and trivial scenes correctly propose nothing).
   const TRAIT_TRIGGERS = [
-    { re: /(임신|아이를 가졌|출산)/, name: "모성", category: "psychological", desc: "아이를 지키려는 마음이 자라난다" },
     { re: /(크게 다|중상|불구|만성 통증|부상을 입)/, name: "만성 통증", category: "physical", desc: "몸 한구석이 늘 욱신거린다" },
     { re: /(배신당|배신을 당|뒤통수)/, name: "경계심", category: "psychological", desc: "누구도 쉽게 믿지 못하게 되었다" },
     { re: /(첫 승리|처음으로 이겼|마침내 해냈|대승)/, name: "자신감", category: "psychological", desc: "해낼 수 있다는 확신이 생겼다" },
   ];
   const hit = TRAIT_TRIGGERS.find((t) => t.re.test(narrativeText));
+  // Phase 14 W1 — mock flags a high-severity integrity issue only on an explicit
+  // marker word, so the watchdog regeneration path is testable without a model.
+  const integrity_issues = /(모순|설정붕괴|말투가 급변|앞뒤가 안 맞)/.test(narrativeText)
+    ? [{ type: "canon_contradiction", description: "mock detected an explicit contradiction marker", severity: "high" }]
+    : [];
   return {
+    ...EMPTY_EXTRACTION(),
     new_memories: [
       {
         summary: `플레이어의 행동으로 장면이 전개되었다: ${narrativeText.slice(0, 40)}...`,
@@ -241,11 +330,7 @@ function mockExtraction(narrativeText) {
         emotion_intensity: 1,
       },
     ],
-    canon_updates: [],
-    flag_changes: [],
-    item_gains: [],
-    item_uses: [],
-    identity_shift: null,
+    integrity_issues,
     new_dynamic_trait_candidate: hit ? { name: hit.name, category: hit.category, origin_summary: narrativeText.slice(0, 40), player_facing_description: hit.desc } : null,
   };
 }
@@ -284,6 +369,10 @@ async function summarize(instruction, text, kind = "recap") {
 
 module.exports = {
   generateNarrative, extractFacts, parseExtraction, stripJsonBlocks, reflectNote,
-  generateStructured, summarize, setUsageListener, setCampaign,
-  hasKey, anyKeyConfigured, keysStatus, reloadKeys, NARRATIVE_MODEL, EXTRACT_MODEL,
+  generateStructured, summarize, setUsageListener, setCampaign, setFullRecord,
+  hasKey, anyKeyConfigured, keysStatus, reloadKeys,
+  // C4 — runtime model/key config. Models are getters (mutable at runtime).
+  applyRuntimeConfig, getRuntimeConfig, AVAILABLE_MODELS,
+  get NARRATIVE_MODEL() { return NARRATIVE_MODEL; },
+  get EXTRACT_MODEL() { return EXTRACT_MODEL; },
 };

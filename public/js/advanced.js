@@ -55,9 +55,25 @@ function buildRows(tab, d) {
     (d.clues_chains.consequence_chains || []).forEach((c) => push(`체인 ${c.chain_id}`, `${c.origin_flag} (${c.origin_turn}턴) → 연결 ${c.linked_events.length}`));
   } else if (tab === "health") {
     Object.entries(d.campaign_health || {}).forEach(([k, v]) => push(k, j(v)));
-    (d.integrity_log || []).slice(-10).forEach((l) => push(`무결성 ${l.turn}턴`, `[${l.severity}] ${l.message}`));
+    const integ = d.integrity || {};
+    (integ.log || d.integrity_log || []).slice(-12).forEach((l) => push(`무결성 ${l.turn}턴`, `[${l.severity}] ${l.message} (${l.source || ""})`));
+    if (integ.extraction_failure_streak) push("추출 연속 실패", `${integ.extraction_failure_streak}회`);
+    (integ.hallucination_candidates || []).forEach((c) => push(`Canon 후보: ${c.name}`, `${c.kind} · ${c.suggested_turn}턴 (검토 대기)`)); // W2
   } else if (tab === "director") {
     (d.director_log || []).slice(-30).forEach((l, i) => push(`로그 #${i + 1}`, j(l)));
+  } else if (tab === "prompt") {
+    // Phase 14 X1 — Prompt Viewer (+ V1/V3 profile). Full text shown verbatim.
+    const p = d.prompt || {};
+    const pp = p.prompt_profile || {};
+    push("프롬프트 버전", pp.prompt_version || "-");
+    const b = pp.last_token_budget;
+    if (b) push("토큰 예산", `사용 ~${b.used} / 예산 ${b.total_budget} (${(b.trimmed || []).length ? "블록 일부 잘림" : "여유"})`);
+    const cc = p.context_cache || {};
+    push("컨텍스트 캐시", cc.cached ? `key ${cc.key} · 적중 ${cc.hits}회 · ${cc.has_handle ? "핸들 있음" : "핸들 없음(mock)"}` : "미등록");
+    if (p.last_prompt) { push(`전송 프롬프트 (${p.last_prompt.turn}턴)`, p.last_prompt.system_prompt); push("플레이어 입력", p.last_prompt.player_input); }
+  } else if (tab === "performance") {
+    // Phase 14 X2 — AI Profiler: per-turn stage timing.
+    (d.performance || []).slice(-15).reverse().forEach((r) => push(`${r.turn}턴`, `서사 ${r.narrative_ms}ms · 추출 ${r.extraction_ms}ms · 총 ${r.total_ms}ms · 기억 ${r.memory_count} · Canon ${r.canon_count}`));
   }
   return rows;
 }
@@ -68,7 +84,7 @@ function renderAdvBody() {
   const q = ADV.q.trim().toLowerCase();
   if (q) {
     // Search spans every sub-tab; show matches grouped by tab.
-    const tabNames = { emotion: "감정", psychology: "심리", relationships: "관계", memory: "기억", canon: "Canon", structure: "스토리 구조", difficulty: "난이도", world: "세계", clues: "단서/체인", health: "건강도", director: "Director" };
+    const tabNames = { emotion: "감정", psychology: "심리", relationships: "관계", memory: "기억", canon: "Canon", structure: "스토리 구조", difficulty: "난이도", world: "세계", clues: "단서/체인", health: "건강도", director: "Director", prompt: "프롬프트", performance: "성능" };
     let html = "";
     for (const t of Object.keys(tabNames)) {
       const hits = buildRows(t, ADV.data).filter((r) => (r.label + " " + r.text).toLowerCase().includes(q));

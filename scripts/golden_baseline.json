@@ -1,0 +1,11 @@
+{
+  "turn_number": 10,
+  "story_flag_count": 0,
+  "canon_count": 5,
+  "memory_count": 10,
+  "rel_edge_count": 2,
+  "rel_value_in_range": true,
+  "mystery_count": 0,
+  "schema_version": 8,
+  "hidden_var_keys": 9
+}

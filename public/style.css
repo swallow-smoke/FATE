@@ -1,24 +1,27 @@
 :root {
   color-scheme: dark;
-  --bg: #0f1110;
-  --shell: #151716;
-  --panel: #1a1d1b;
-  --panel-2: #20231f;
-  --card: #171a18;
-  --card-2: #1d211f;
-  --ink: #f3efe4;
-  --soft: #d8d0bf;
-  --muted: #948d80;
-  --faint: #6e685f;
-  --line: rgba(238, 224, 198, 0.12);
-  --line-strong: rgba(238, 224, 198, 0.22);
-  --gold: #d6b56d;
-  --gold-2: #f0d48b;
-  --jade: #79b69c;
-  --rose: #d4868a;
-  --blue: #8ea9d8;
-  --violet: #b096d4;
-  --shadow: 0 18px 54px rgba(0, 0, 0, 0.34);
+  /* Design spec v2 — Calm/Trust/Warmth. Slate canvas, teal primary, amber accent. */
+  --bg: #14171c;
+  --shell: #1e232b;
+  --panel: #1e232b;
+  --panel-2: #232a33;
+  --card: #1e232b;
+  --card-2: #232a33;
+  --ink: #e4e6eb;
+  --soft: #d2d6de;
+  --muted: #8b93a1;
+  --faint: #6b7280;
+  --line: rgba(228, 230, 235, 0.10);
+  --line-strong: rgba(228, 230, 235, 0.18);
+  --primary: #4a90a4;   /* CTA (teal) */
+  --primary-2: #5aa6bb; /* CTA hover (lightness only) */
+  --gold: #c9834e;      /* accent / emphasis (amber) — kept var name for reach */
+  --gold-2: #dda06a;
+  --jade: #5b8c6e;      /* success / positive */
+  --rose: #b0473f;      /* error / failure */
+  --blue: #6b7ea8;
+  --violet: #9a86c4;
+  --shadow: 0 12px 34px rgba(0, 0, 0, 0.36);
 }
 
 * { box-sizing: border-box; }
@@ -28,10 +31,9 @@ body {
   flex-direction: column;
   height: 100vh;
   overflow: hidden;
-  font-family: "Segoe UI", "Pretendard", "Apple SD Gothic Neo", system-ui, sans-serif;
+  font-family: "Pretendard", "Pretendard Variable", "Apple SD Gothic Neo", "Segoe UI", system-ui, sans-serif;
   background:
-    linear-gradient(180deg, rgba(214, 181, 109, 0.035), transparent 34%),
-    radial-gradient(1100px 720px at 78% 12%, rgba(121, 182, 156, 0.075), transparent 58%),
+    radial-gradient(1200px 760px at 80% 8%, rgba(74, 144, 164, 0.055), transparent 60%),
     var(--bg);
   color: var(--ink);
   font-size: 14px;
@@ -184,6 +186,11 @@ button { -webkit-tap-highlight-color: transparent; }
   border-radius: 12px;
   line-height: 1.68;
   box-shadow: 0 10px 34px rgba(0,0,0,.18);
+  /* A1 — long unbroken tokens (URLs, 긴 이름 등)이 버블 밖으로 삐져나가
+     레이아웃을 뒤틀던 문제 방지. */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  min-width: 0;
 }
 .msg .badge {
   display: flex;
@@ -640,6 +647,27 @@ button.primary {
 .wz-del, .hr-del { border: 1px solid var(--line); border-radius: 8px; background: none; color: var(--faint); cursor: pointer; }
 .wz-npc { margin: 10px 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
 .wz-npc.off { opacity: .45; }
+.wz-field textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: #101310; color: var(--ink); font-family: inherit; line-height: 1.5; resize: vertical; }
+.wz-field select { width: 100%; height: 36px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: #101310; color: var(--ink); }
+.wz-field label small, .set-row small { color: var(--faint); font-weight: 500; text-transform: none; letter-spacing: 0; }
+/* B1/C1/C3 — per-field AI 도움 button + repeatable entity cards */
+.ai-help {
+  margin-left: 8px; padding: 2px 9px; border: 1px solid rgba(121,182,156,.45); border-radius: 999px;
+  background: rgba(121,182,156,.08); color: var(--jade, #79b69c); font-size: 10px; font-weight: 700;
+  text-transform: none; letter-spacing: 0; cursor: pointer; vertical-align: middle;
+}
+.ai-help:hover:not(:disabled) { background: rgba(121,182,156,.2); color: var(--ink); }
+.ai-help:disabled { opacity: .5; cursor: default; }
+.wz-entity { margin: 10px 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+.wz-entity-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.wz-entity-head > span { display: flex; align-items: center; gap: 6px; }
+.wz-entity-head .wz-del { padding: 2px 8px; font-size: 11px; }
+.wz-grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; }
+@media (max-width: 560px) { .wz-grid2 { grid-template-columns: 1fr; } }
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 9px; border: 1px solid var(--line-strong); border-radius: 999px; font-size: 12px; color: var(--muted); cursor: pointer; }
+.chip input { accent-color: var(--jade, #79b69c); }
+.npc-rel.off { opacity: .4; }
 .dna-row { display: grid; grid-template-columns: 110px 1fr 24px; align-items: center; gap: 10px; margin: 7px 0; font-size: 12px; }
 .dna-row label { color: var(--muted); }
 .dna-val { color: var(--gold-2); font-weight: 700; text-align: right; }
@@ -1448,3 +1476,218 @@ body.low-spec .advanced-panel, body.reduce-motion .advanced-panel { backdrop-fil
 .ub-track { height: 8px; background: rgba(148,141,128,.15); border-radius: 4px; overflow: hidden; }
 .ub-fill { height: 100%; background: var(--gold); border-radius: 4px; }
 .ub-val { text-align: right; color: var(--ink); }
+
+/* ==================================================================== */
+/* Design Spec v2 — consolidated refinements (append-only override).     */
+/* Calm 55 / Trust 25 / Warmth 20. Slate canvas, teal CTA, amber accent. */
+/* Structure/classes unchanged; this block only retints & refines.       */
+/* ==================================================================== */
+
+/* Quiet the warm "paper" identity: neutralize texture + near-kill pulse. */
+:root { --paper: #171b22; --paper-hi: #1e2530; --paper-fiber: rgba(228,230,235,.03); --pulse-alpha: .006; }
+#chatpane::before {
+  opacity: .3;
+  background: repeating-linear-gradient(0deg, rgba(255,255,255,.012) 0 1px, transparent 1px 56px);
+}
+
+/* A3 — one font everywhere: chat, settings, form labels all use Pretendard
+   (inherited from body). Only the opt-in 읽기 모드(novel view) keeps serif.
+   This also removes the load/render inconsistency from swapping web fonts. */
+body.read-mode #log { font-family: "Noto Serif KR", Georgia, serif; }
+.msg.gm { line-height: 1.72; }
+.msg.gm::before { background: linear-gradient(var(--primary), var(--gold)); }
+
+/* Chat stream: narrower, centered column → more side whitespace (refine #1). */
+#log { max-width: 900px; width: 100%; margin: 0 auto; }
+.msg { max-width: min(680px, 92%); box-shadow: 0 8px 26px rgba(0,0,0,.22); }
+
+/* C8 — speaker separation. A GM turn is a stream: narration flows bubble-less at
+   full width; each NPC line sits in its own subtly-tinted bubble with a name
+   label; the player's own quoted lines lean right. Tints stay very low-sat to
+   respect the Calm palette (only --sp-hue changes per speaker). */
+.msg.gm.gm-segmented {
+  background: none; border: none; box-shadow: none; padding: 6px 0; max-width: min(720px, 96%);
+}
+.msg.gm.gm-segmented::before { display: none; }
+.msg.gm.gm-segmented > .badge { margin-bottom: 4px; opacity: .8; }
+.gm-segmented .gm-body { display: flex; flex-direction: column; gap: 10px; }
+.gm-segmented .seg.narration { padding: 0 2px; }
+.gm-segmented .seg.narration p:last-child { margin-bottom: 0; }
+.gm-segmented .seg.dialogue {
+  align-self: flex-start; max-width: 88%;
+  padding: 9px 13px; border-radius: 4px 13px 13px 13px;
+  border: 1px solid hsla(var(--sp-hue, 210), 22%, 55%, .32);
+  background: hsla(var(--sp-hue, 210), 24%, 50%, .10);
+}
+.gm-segmented .seg.dialogue .sp-name {
+  display: block; font-size: 11px; font-weight: 700; margin-bottom: 2px;
+  color: hsla(var(--sp-hue, 210), 40%, 70%, .95);
+}
+.gm-segmented .seg.dialogue .sp-line { line-height: 1.6; }
+.gm-segmented .seg.dialogue.by-player {
+  align-self: flex-end; border-radius: 13px 4px 13px 13px;
+  border-color: rgba(74,144,164,.42); background: rgba(74,144,164,.14);
+}
+.gm-segmented .seg.dialogue.by-player .sp-name { color: var(--muted); text-align: right; }
+
+/* Player message: calm teal surface, not a loud gradient. */
+.msg.player {
+  background: rgba(74,144,164,.16);
+  color: var(--ink);
+  border-color: rgba(74,144,164,.42);
+}
+.msg.player .badge { color: var(--muted); }
+
+/* CTA buttons: flat teal, hover = lightness only (no gradient, no bounce). */
+#send, button.primary,
+.modal-actions button.primary,
+#dnaSave.primary, #hrSave.primary {
+  background: var(--primary); color: #0c1418; font-weight: 750;
+  box-shadow: 0 8px 22px rgba(74,144,164,.18);
+}
+#send:hover, button.primary:hover,
+.modal-actions button.primary:hover { background: var(--primary-2); }
+
+/* Composer input is the protagonist: focus = border only, no glow (refine #5). */
+#input { background: #12151b; border-color: var(--line-strong); }
+#input:focus { border-color: var(--primary); box-shadow: none; }
+
+/* Choices are secondary to the input: quiet ghost pills (refine #5). */
+.choice-btn {
+  border: 1px solid var(--line-strong);
+  background: transparent; color: var(--muted);
+}
+.choice-btn:hover { background: rgba(255,255,255,.04); color: var(--ink); border-color: var(--primary); }
+
+/* Monologue (inner voice): faint tint + thin accent edge (refine #2). */
+.monologue {
+  background: rgba(201,131,78,.09); color: var(--soft);
+  padding: 0 4px; border-radius: 3px;
+  box-shadow: inset 2px 0 0 rgba(201,131,78,.5);
+}
+.msg.gm .monologue { opacity: 1; }
+
+/* Launcher cards: subtle lift on hover, not just a border (refine #4). */
+.camp-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--line-strong);
+  box-shadow: 0 14px 32px rgba(0,0,0,.30);
+}
+
+/* Brand marks: cool teal→amber blend instead of warm gold→jade. */
+.brand-mark, .empty-mark { background: linear-gradient(145deg, var(--primary), var(--gold)); color: #0c1418; }
+.brand-mark { box-shadow: 0 8px 22px rgba(74,144,164,.20); }
+.cc-plus { color: var(--primary); }
+
+/* Advanced panel: unmistakably "not the game" — darker canvas + fixed label. */
+.advanced-panel { background: #0c0e12; }
+.adv-head { background: #10131a; border-bottom: 1px solid rgba(201,131,78,.28); }
+.adv-head::before {
+  content: "개발자 · READ MODEL"; position: absolute; top: 0; left: 0;
+  transform: none; font-size: 9px; letter-spacing: 1.5px; color: var(--gold);
+  background: rgba(201,131,78,.12); padding: 2px 8px; border-radius: 0 0 6px 0;
+}
+.adv-head { position: relative; padding-top: 18px; }
+.adv-head strong { color: var(--gold); letter-spacing: .3px; }
+
+/* ============================================================================
+   C5/C6/C7 — notifications (toast + left sidebar) + communication modal.
+   All theme-aware via CSS vars, so they follow the active light/dark theme.
+   ========================================================================== */
+
+/* topbar buttons */
+#notifBtn, #commBtn {
+  position: relative; height: 34px; min-width: 34px; padding: 0 8px; border: 1px solid var(--line);
+  border-radius: 8px; background: rgba(255,255,255,.03); color: var(--muted); cursor: pointer; font-size: 15px;
+}
+#notifBtn:hover, #commBtn:hover { color: var(--ink); border-color: rgba(214,181,109,.5); }
+.notif-badge {
+  position: absolute; top: -6px; right: -6px; min-width: 17px; height: 17px; padding: 0 4px;
+  border-radius: 999px; background: var(--rose, #b0473f); color: #fff; font-size: 10px; font-weight: 800;
+  display: flex; align-items: center; justify-content: center; line-height: 1;
+}
+
+/* C5 — toast host + toasts (bottom-right) */
+.toast-host { position: fixed; right: 18px; bottom: 18px; z-index: 120; display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
+.toast {
+  pointer-events: auto; display: flex; align-items: center; gap: 10px; width: min(320px, 86vw);
+  padding: 12px 14px; border: 1px solid var(--line-strong); border-radius: 12px;
+  background: var(--panel); box-shadow: var(--shadow); cursor: pointer;
+  transform: translateX(120%); opacity: 0; transition: transform .3s ease, opacity .3s ease;
+}
+.toast.show { transform: translateX(0); opacity: 1; }
+.toast-icon { font-size: 20px; }
+.toast-copy { display: flex; flex-direction: column; min-width: 0; }
+.toast-copy b { color: var(--ink); font-size: 13px; }
+.toast-copy span { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* C6 — left notification sidebar (SEPARATE from the right dev Advanced panel) */
+.notif-backdrop { position: fixed; inset: 0; z-index: 108; background: rgba(8,10,9,.4); }
+.notif-sidebar {
+  position: fixed; top: 0; left: 0; bottom: 0; width: 340px; max-width: 90vw; z-index: 110;
+  display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line-strong);
+  box-shadow: 18px 0 48px rgba(0,0,0,.28); transform: translateX(-100%); transition: transform .22s ease;
+}
+.notif-sidebar.open { transform: translateX(0); }
+.notif-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 16px 12px; border-bottom: 1px solid var(--line); }
+.notif-head strong { color: var(--gold-2); font-size: 15px; }
+.notif-head-actions { display: flex; gap: 6px; }
+.notif-head-actions .ghost-btn { font-size: 12px; }
+.notif-list { flex: 1; overflow-y: auto; padding: 8px; }
+.notif-empty { color: var(--muted); text-align: center; padding: 30px 10px; font-size: 13px; }
+.notif-item {
+  width: 100%; display: flex; align-items: flex-start; gap: 10px; text-align: left; margin-bottom: 6px;
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.02);
+  color: var(--soft); cursor: pointer; position: relative;
+}
+.notif-item:hover { border-color: rgba(214,181,109,.45); }
+.notif-item.unread { background: rgba(74,144,164,.08); border-color: rgba(74,144,164,.3); }
+.notif-ic { font-size: 16px; flex-shrink: 0; }
+.notif-copy { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+.notif-copy b { color: var(--ink); font-size: 13px; }
+.notif-copy span { color: var(--muted); font-size: 12px; line-height: 1.4; }
+.notif-dot { position: absolute; top: 12px; right: 12px; width: 8px; height: 8px; border-radius: 999px; background: var(--jade, #79b69c); }
+
+/* C7 — communication modal (messenger skin default; letter skin for pre-modern) */
+.comm-modal { position: fixed; inset: 0; z-index: 115; display: grid; place-items: center; background: rgba(8,10,9,.6); backdrop-filter: blur(3px); opacity: 0; transition: opacity .2s ease; }
+.comm-modal.open { opacity: 1; }
+.comm-box {
+  width: min(860px, 94vw); height: min(620px, 88vh); display: flex; flex-direction: column;
+  border: 1px solid var(--line-strong); border-radius: 16px; background: var(--panel); box-shadow: var(--shadow); overflow: hidden;
+}
+.comm-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+.comm-head strong { color: var(--gold-2); }
+.comm-body { flex: 1; display: grid; grid-template-columns: 240px 1fr; min-height: 0; }
+.comm-list { border-right: 1px solid var(--line); overflow-y: auto; padding: 8px; }
+.comm-convo {
+  width: 100%; display: flex; align-items: center; gap: 10px; text-align: left; margin-bottom: 4px;
+  padding: 8px 10px; border: 1px solid transparent; border-radius: 10px; background: none; color: var(--soft); cursor: pointer; position: relative;
+}
+.comm-convo:hover { background: rgba(255,255,255,.03); }
+.comm-convo.active { background: rgba(74,144,164,.12); border-color: rgba(74,144,164,.3); }
+.comm-avatar { width: 32px; height: 32px; flex-shrink: 0; border-radius: 999px; display: grid; place-items: center; background: rgba(121,182,156,.18); color: var(--ink); font-weight: 700; }
+.comm-convo-copy { display: flex; flex-direction: column; min-width: 0; }
+.comm-convo-copy b { color: var(--ink); font-size: 13px; }
+.comm-convo-copy span { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.comm-thread { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.comm-thread-head { padding: 12px 16px; border-bottom: 1px solid var(--line); color: var(--gold-2); font-weight: 700; }
+.comm-msgs { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.comm-msg { display: flex; flex-direction: column; max-width: 78%; }
+.comm-msg.in { align-self: flex-start; }
+.comm-msg.out { align-self: flex-end; align-items: flex-end; }
+.comm-bubble { padding: 9px 13px; border-radius: 14px; line-height: 1.5; font-size: 14px; }
+.comm-msg.in .comm-bubble { background: rgba(255,255,255,.05); border: 1px solid var(--line); color: var(--soft); border-top-left-radius: 4px; }
+.comm-msg.out .comm-bubble { background: rgba(74,144,164,.16); border: 1px solid rgba(74,144,164,.4); color: var(--ink); border-top-right-radius: 4px; }
+.comm-meta { font-size: 10px; color: var(--faint); margin-top: 3px; }
+.comm-compose { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); }
+.comm-compose textarea { flex: 1; resize: none; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 10px; background: #101310; color: var(--ink); font-family: inherit; }
+.comm-noreply { padding: 12px 16px; }
+/* letter skin — warmer paper feel reusing the same layout (shared backend) */
+.comm-box.letter-skin { background: #201b12; }
+.comm-box.letter-skin .comm-bubble { font-family: "Noto Serif KR", Georgia, serif; background: rgba(214,181,109,.08); border-color: rgba(214,181,109,.3); }
+.comm-box.letter-skin .comm-msg.out .comm-bubble { background: rgba(214,181,109,.14); border-color: rgba(214,181,109,.45); }
+
+@media (max-width: 640px) {
+  .comm-body { grid-template-columns: 1fr; }
+  .comm-list { display: none; }
+}

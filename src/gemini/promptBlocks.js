@@ -6,54 +6,92 @@
 // entities, Memory objects, the Emotion Directive, the SceneSpec) — they do not
 // call the engines themselves. src/turn.js does the retrieval and passes it in.
 
-const { SYSTEM_PROMPT_BASE, CONTENT_INTENSITY_LINES, RESPONSE_LENGTH_LINES } = require("./systemPromptBase");
+const { SYSTEM_PROMPT_BASE, CONTENT_INTENSITY_LINES, RESPONSE_LENGTH_LINES, PLAYER_AGENCY_LOCK_LINE } = require("./systemPromptBase");
+const tokenBudget = require("./tokenBudget");
 
 const TIER_NAME = ["", "Temporary", "Personal", "Historical", "Cultural", "Legendary"];
 
+// Render one Canon entity's body text at the given LOD (Phase 13 V4).
+// "full" = complete psychology; "medium" = name + one-line only.
+function renderCanonBody(e, lod) {
+  const d = e.data || {};
+  if (lod === "medium") {
+    const one = e.type === "Character"
+      ? (d.goal_current || (d.psychology && d.psychology.desire) || d.current_status || "")
+      : e.type === "World" ? (d.notable_features || [])[0] || ""
+      : e.type === "Faction" ? (d.stance || "") : "";
+    return `[${e.type}] ${d.birth_name || e.canon_id}${one ? " — " + one : ""} (요약)`;
+  }
+  let desc;
+  if (e.type === "Character") {
+    const psy = d.psychology || {};
+    const bits = [d.affiliations && d.affiliations.length ? `소속: ${d.affiliations.join(", ")}` : null,
+      (psy.attachment_style || d.attachment_style) ? `애착유형: ${psy.attachment_style || d.attachment_style}` : null,
+      psy.core_fear ? `두려움: ${psy.core_fear}` : null,
+      psy.desire ? `욕구: ${psy.desire}` : null,
+      psy.defense_mechanism ? `방어기제: ${psy.defense_mechanism}` : null,
+      d.goal_current ? `현재 목표: ${d.goal_current}` : null,
+      d.current_location ? `현재 위치: ${d.current_location}` : null,
+      d.current_status ? `상태: ${d.current_status}` : null].filter(Boolean);
+    desc = `${d.birth_name || e.canon_id}${bits.length ? " — " + bits.join(", ") : ""}`;
+  } else if (e.type === "World") {
+    const feats = (d.notable_features || []).join("; ");
+    desc = `${e.canon_id}${feats ? " — " + feats : ""}`;
+  } else if (e.type === "Faction") {
+    const bits = [d.leader ? `수장: ${d.leader}` : null, d.stance ? `성향: ${d.stance}` : null].filter(Boolean);
+    desc = `${e.canon_id}${bits.length ? " — " + bits.join(", ") : ""}`;
+  } else {
+    desc = e.canon_id;
+  }
+  return `[${e.type}] ${desc}`;
+}
+
+// Produce per-entity lines so delta (V5) and token-budget (V3) can operate on
+// individual items. lod is { canon_id: "full"|"medium" }. Priority: full > medium.
+function renderCanonLines(entities, lod = {}) {
+  return (entities || []).map((e) => {
+    const level = lod[e.canon_id] || "full";
+    return { id: e.canon_id, body: renderCanonBody(e, level), priority: level === "full" ? 3 : 1 };
+  });
+}
+
 // --- <canon_context> — from Canon Database (CanonDatabase §7) -------------
-function buildCanonContext(entities) {
+// opts: { lod, unchanged:Set, budget:number, onTrim(fn) }
+function buildCanonContext(entities, opts = {}) {
   if (!entities || !entities.length) {
     return "<canon_context>\n(관련 Canon 없음)\n</canon_context>";
   }
-  const lines = entities.map((e) => {
-    const d = e.data || {};
-    let desc;
-    if (e.type === "Character") {
-      const psy = d.psychology || {};
-      const bits = [d.affiliations && d.affiliations.length ? `소속: ${d.affiliations.join(", ")}` : null,
-        (psy.attachment_style || d.attachment_style) ? `애착유형: ${psy.attachment_style || d.attachment_style}` : null,
-        psy.core_fear ? `두려움: ${psy.core_fear}` : null,
-        psy.desire ? `욕구: ${psy.desire}` : null,
-        psy.defense_mechanism ? `방어기제: ${psy.defense_mechanism}` : null,
-        d.goal_current ? `현재 목표: ${d.goal_current}` : null,
-        d.current_location ? `현재 위치: ${d.current_location}` : null,
-        d.current_status ? `상태: ${d.current_status}` : null].filter(Boolean);
-      desc = `${d.birth_name || e.canon_id}${bits.length ? " — " + bits.join(", ") : ""}`;
-    } else if (e.type === "World") {
-      const feats = (d.notable_features || []).join("; ");
-      desc = `${e.canon_id}${feats ? " — " + feats : ""}`;
-    } else if (e.type === "Faction") {
-      const bits = [d.leader ? `수장: ${d.leader}` : null, d.stance ? `성향: ${d.stance}` : null].filter(Boolean);
-      desc = `${e.canon_id}${bits.length ? " — " + bits.join(", ") : ""}`;
-    } else {
-      desc = e.canon_id;
-    }
-    return `[${e.type}] ${desc}`;
-  });
-  return `<canon_context>\n${lines.join("\n")}\n위 사실들은 절대 변경하거나 모순되게 서술하지 마라.\n</canon_context>`;
+  let lines = renderCanonLines(entities, opts.lod);
+  if (opts.budget) {
+    const r = tokenBudget.trimToBudget(lines, opts.budget);
+    if (opts.onTrim) opts.onTrim("canon_context", r);
+    lines = r.kept;
+  }
+  const rendered = lines.map((l) => (opts.unchanged && opts.unchanged.has(l.id) ? `${l.body.split(" — ")[0]} (이전과 동일)` : l.body));
+  return `<canon_context>\n${rendered.join("\n")}\n위 사실들은 절대 변경하거나 모순되게 서술하지 마라.\n</canon_context>`;
 }
 
 // --- <memory_context> — from Memory Engine (MemoryEngine §8) --------------
-function buildMemoryContext(memories) {
+function renderMemoryLines(memories) {
+  return (memories || []).map((m) => {
+    const tier = TIER_NAME[m.tier] || "Temporary";
+    const emo = (m.emotion_tags || []).length ? ` (감정: ${m.emotion_tags.join(", ")})` : "";
+    return { id: m.id || m.summary, body: `[${tier}] ${m.summary}${emo}`, priority: m.tier || 1 };
+  });
+}
+
+function buildMemoryContext(memories, opts = {}) {
   if (!memories || !memories.length) {
     return "<memory_context>\n(관련 기억 없음)\n</memory_context>";
   }
-  const lines = memories.map((m) => {
-    const tier = TIER_NAME[m.tier] || "Temporary";
-    const emo = (m.emotion_tags || []).length ? ` (감정: ${m.emotion_tags.join(", ")})` : "";
-    return `[${tier}] ${m.summary}${emo}`;
-  });
-  return `<memory_context>\n${lines.join("\n")}\n위 기억들을 참고하되, 그대로 나열하지 말고 현재 장면에 자연스럽게 녹여라.\n</memory_context>`;
+  let lines = renderMemoryLines(memories);
+  if (opts.budget) {
+    const r = tokenBudget.trimToBudget(lines, opts.budget);
+    if (opts.onTrim) opts.onTrim("memory_context", r);
+    lines = r.kept;
+  }
+  const rendered = lines.map((l) => (opts.unchanged && opts.unchanged.has(l.id) ? `${l.body} (이전과 동일)` : l.body));
+  return `<memory_context>\n${rendered.join("\n")}\n위 기억들을 참고하되, 그대로 나열하지 말고 현재 장면에 자연스럽게 녹여라.\n</memory_context>`;
 }
 
 // --- <emotion_directive> — from Emotion Engine (EmotionEngine §9) ----------
@@ -78,6 +116,8 @@ function buildSceneDirective(spec) {
     reflection: "성찰",
     transition: "전환",
     catharsis: "카타르시스",
+    // Phase 15 CC — plugin-registered scene types merge their labels here.
+    ...require("../plugins/plugins").sceneTypeLabels(),
   };
   const moodMap = { comedy: "코미디", slice_of_life: "일상", mystery: "미스터리", horror: "공포", romance: "로맨스", political: "정치극", adventure: "모험" };
   const types = (spec.scene_type || []).map((t) => typeMap[t] || t).join(" + ");
@@ -113,6 +153,8 @@ function buildSceneDirective(spec) {
   for (const c of spec.npc_candidates || []) lines.push(`NPC 능동 후보: ${c.line}`); // A1
   if (spec.mystery_hint) lines.push(`미스터리 단서(자연스럽게 드러낼 것): ${spec.mystery_hint.content_summary} — 수수께끼: ${spec.mystery_hint.question}`); // A4
   if (spec.sentimental_echo) lines.push(`추억의 물건(${spec.sentimental_echo.item_name})이 이 장면과 닿아 있다 — 담담히 지나치지 말고 획득 당시의 감정을 짧게 되살릴 것: "${spec.sentimental_echo.memory_summary}"`); // Phase 11 R
+  // PATCH 관계 전환 — a relationship is on the cusp of changing; give it weight.
+  if (spec.relationship_transition) lines.push(`관계 전환의 순간: 플레이어와 이 인물의 관계가 지금 한 단계 달라지려 한다. 이 변화를 스쳐 지나가는 대사 한 줄로 처리하지 말고, 장면의 중심에 놓아 감정적 무게를 실어 다뤄라. (단, 관계의 '이름/라벨'을 직접 선언하지는 말 것 — 행동과 대사로 드러내라.)`);
   return `<scene_directive>\n${lines.join("\n")}\n</scene_directive>`;
 }
 
@@ -134,23 +176,46 @@ function buildRecentDialogue(recentDialogue) {
   return `<recent_dialogue>\n${lines.join("\n\n")}\n</recent_dialogue>`;
 }
 
+// --- <setup_notes> — C1/C2. World background description + free-text notes the
+// player wrote at creation. Reference material only: weave it in naturally, do
+// NOT recite or structure it. Kept as a low-priority context block.
+function buildSetupNotes(setupNotes) {
+  const s = setupNotes || {};
+  const lines = [];
+  if (s.background && String(s.background).trim()) lines.push(`[세계관 배경]\n${String(s.background).trim()}`);
+  if (s.worldNotes && String(s.worldNotes).trim()) lines.push(`[세계 관련 기타 메모]\n${String(s.worldNotes).trim()}`);
+  if (s.playerNotes && String(s.playerNotes).trim()) lines.push(`[플레이어 캐릭터 기타 메모]\n${String(s.playerNotes).trim()}`);
+  if (!lines.length) return null;
+  return `<setup_notes>\n${lines.join("\n\n")}\n이 내용은 참고용 배경이다. 그대로 나열하지 말고 자연스럽게 서사에 녹여라.\n</setup_notes>`;
+}
+
 // --- full system prompt assembly (§3 template) ----------------------------
 // NOTE: player_input is intentionally NOT included here. Per §6 checklist it is
 // sent as the user turn in `contents`, not in the system prompt (keeps the
 // prompt cacheable / avoids per-turn cache invalidation).
-function assembleSystemPrompt({ canon, memory, emotion, scene, recent, houseRules, contentIntensity, responseLength }) {
+// optimize (Phase 13): { canonLod, canonUnchanged, memoryUnchanged, allocation }
+// — enables Dynamic LOD (V4), Delta Context (V5) and Token Budget (V3). When
+// omitted, behaviour is identical to before (full LOD, no delta, no trimming).
+function assembleSystemPrompt({ canon, memory, emotion, scene, recent, houseRules, contentIntensity, responseLength, playerAgencyLock, setupNotes, optimize }) {
   const intensityLine = CONTENT_INTENSITY_LINES[contentIntensity || "medium"] || CONTENT_INTENSITY_LINES.medium;
   const lengthLine = RESPONSE_LENGTH_LINES[responseLength || "normal"] || "";
-  return [
+  const o = optimize || {};
+  const trims = [];
+  const onTrim = (block, r) => { if (r.dropped.length) trims.push({ block, dropped: r.dropped.length, tokens: r.tokens }); };
+  const alloc = o.allocation || {};
+  const prompt = [
     SYSTEM_PROMPT_BASE,
     "",
     intensityLine,
     lengthLine || null,
+    playerAgencyLock ? PLAYER_AGENCY_LOCK_LINE : null, // C9
     buildHouseRules(houseRules),
     "",
-    buildCanonContext(canon),
+    buildSetupNotes(setupNotes), // C1/C2
     "",
-    buildMemoryContext(memory),
+    buildCanonContext(canon, { lod: o.canonLod, unchanged: o.canonUnchanged, budget: alloc.canon_context, onTrim }),
+    "",
+    buildMemoryContext(memory, { unchanged: o.memoryUnchanged, budget: alloc.memory_context, onTrim }),
     "",
     buildEmotionDirective(emotion),
     "",
@@ -160,14 +225,18 @@ function assembleSystemPrompt({ canon, memory, emotion, scene, recent, houseRule
     "",
     "위 맥락을 바탕으로 다음 장면을 서술하라.",
   ].filter((x) => x !== null).join("\n");
+  return { prompt, trims, tokens_estimate: tokenBudget.estimateTokens(prompt) };
 }
 
 module.exports = {
   buildCanonContext,
   buildMemoryContext,
+  renderCanonLines,
+  renderMemoryLines,
   buildEmotionDirective,
   buildSceneDirective,
   buildRecentDialogue,
   buildHouseRules,
+  buildSetupNotes,
   assembleSystemPrompt,
 };
