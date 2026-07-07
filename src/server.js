@@ -16,18 +16,49 @@ const undo = require("./undo/undo");
 const wizardGen = require("./wizard/generator");
 const rumors = require("./world/rumors");
 const factionReputation = require("./world/factionReputation");
+const worldNews = require("./world/worldNews"); // Phase 16 · World News
+const npcGoals = require("./npc/npcGoals"); // Phase 16 · NPC Goal System
+const worldHistory = require("./world/worldHistory"); // Phase 16 · World History Book
+const nicknames = require("./npc/nicknames"); // Phase 16 · Nickname System
+// Phase 16+ · Living World expansion
+const titles = require("./player/titles");
+const familyTree = require("./canon/familyTree");
+const property = require("./player/property");
+const wantedSys = require("./world/wanted");
+const festivals = require("./world/festivals");
+const calendar = require("./player/calendar");
+const livingObjects = require("./inventory/livingObjects");
+const npcSecrets = require("./npc/secrets");
+const promises = require("./player/promises");
+const regionReputation = require("./world/regionReputation");
+const organizations = require("./world/organizations");
+const inspector = require("./meta/inspector");
 const wiki = require("./wiki/renderCanon");
 const turnLog = require("./history/turnLog");
 const personalStore = require("./personal/personalStore");
 const highlights = require("./game/highlights");
 const worldTemplates = require("./world/worldTemplates");
 const letters = require("./comm/letters");
+const dimensionRegistry = require("./custom/dimensionRegistry");
+const feedbackStore = require("./feedback/feedbackStore");
+// PATCH Notion Import — 링크 자동 가져오기.
+const notionStore = require("./notion/notionStore");
+const notionClient = require("./notion/notionClient");
+const notionImport = require("./notion/notionImport");
+const promptSettings = require("./gemini/promptSettings");
 
 // Phase 8 D2 — content guardrail applied at Canon-registration time (before the
 // Kernel), independent of the runtime prompt safety. Blocks a minor age being
 // paired with a romance relationship type in the wizard's character data.
 const MINOR_RE = /(미성년|아동|어린이|초등|중학생|중학교|소아|유아|10대\s*초반|１０대)/;
 const ROMANCE_RE = /(로맨스|romance|연인|애인|사랑|연애|결혼|약혼)/i;
+const START_OPENERS = {
+  arrival: "낯선 공기가 먼저 피부에 닿는다. 이곳의 거리와 사람들은 아직 당신을 모르지만, 어쩐지 오래전부터 기다리고 있었던 것처럼 조용히 길을 내준다.",
+  letter: "편지는 예상보다 가벼웠고, 그래서 더 불길했다. 봉투의 접힌 자국 사이로 오래 닫아둔 이름 하나가 천천히 되살아난다.",
+  rainy_reunion: "비가 내린다. 물기 어린 빛 너머, 한때 익숙했던 얼굴이 잠시 당신을 알아보고 멈춘다.",
+  missing: "누군가 사라졌다는 말은 처음엔 소문처럼 들렸다. 하지만 사람들이 피하는 시선과 닫힌 문들이 그 말을 점점 사실처럼 만든다.",
+  quiet_day: "아무 일도 일어나지 않은 듯한 하루다. 그래서인지 작은 소리와 사소한 표정들이 평소보다 선명하게 다가온다.",
+};
 function ageIsMinor(v) {
   if (v == null) return false;
   const n = Number(String(v).replace(/[^0-9]/g, ""));
@@ -52,7 +83,7 @@ function contentGuardrail(body) {
 gemini.setUsageListener(usageLog.record);
 
 const app = express();
-app.use(express.json({ limit: "10mb" })); // import bundles can be large
+app.use(express.json({ limit: "50mb" })); // import bundles and long world bibles can be large
 app.use(express.static(path.join(__dirname, "..", "public")));
 
 // Cache engine instances per campaign so their in-memory Canon/Memory stay in
@@ -66,6 +97,31 @@ function getDeps(campaignId) {
     depsByCampaign.set(campaignId, { canonDb, memoryEngine, kernel });
   }
   return depsByCampaign.get(campaignId);
+}
+
+function sanitizeWriterPage(page) {
+  const src = page || {};
+  const id = String(src.id || ("page_" + Date.now().toString(36))).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
+  const now = new Date().toISOString();
+  return {
+    id,
+    type: String(src.type || "note").slice(0, 40),
+    title: String(src.title || "새 문서").slice(0, 120),
+    icon: String(src.icon || "DOC").slice(0, 20),
+    status: String(src.status || "draft").slice(0, 40),
+    tags: Array.isArray(src.tags) ? src.tags.map((t) => String(t).slice(0, 32)).filter(Boolean).slice(0, 12) : [],
+    summary: String(src.summary || "").slice(0, 2000),
+    body: String(src.body || "").slice(0, 120000),
+    created_at: src.created_at || now,
+    updated_at: now,
+  };
+}
+
+function ensureWriterWorkspace(state) {
+  campaignState.migrate(state);
+  state.writer_workspace = state.writer_workspace || { active_page_id: "book", pages: [] };
+  if (!Array.isArray(state.writer_workspace.pages)) state.writer_workspace.pages = [];
+  return state.writer_workspace;
 }
 
 // Phase 6 A — slash commands. Human types them directly; the only "AI" here
@@ -116,6 +172,7 @@ app.post("/api/turn", async (req, res) => {
       pending_transition: result.pending_transition || null, // Phase 8 C2 — needs confirm
       daily_summary: result.daily_summary || null, // Phase 10 J2
       time_accel: result.time_accel || null, // Phase 14 Y — batch offscreen summary
+      status_window: result.status_window || null, // PATCH_INDIVIDUAL_WORKS_ANALYSIS — genre stat window
       countdowns: require("./game/countdowns").build(state), // Phase 10 O — revealed only
       undo_available: !!undo.available(campaignId),
       story_structure: state.story_structure, // Phase 6 D — progress bar
@@ -469,6 +526,8 @@ app.get("/api/advanced/:id", (req, res) => {
     // Phase 13/14 — infra + debug views.
     prompt: { last_prompt: state.last_prompt || null, prompt_profile: state.prompt_profile || {}, context_cache: require("./gemini/contextCache").status(req.params.id) }, // X1 + V1/V3
     performance: state.perf_log || [], // X2
+    registry: dimensionRegistry.ensure(state),
+    feedback: feedbackStore.load(req.params.id),
     integrity: { log: summary.integrity_log, hallucination_candidates: state.hallucination_candidates || [], extraction_failure_streak: state.extraction_failure_streak || 0 }, // W
     snapshots: require("./state/snapshots").list(req.params.id), // V8
     state_change_log: (state.state_change_log || []).slice(-20), // V7
@@ -504,7 +563,7 @@ app.post("/api/explain/:id", async (req, res) => {
     gemini.setCampaign(req.params.id);
     let explanation = null;
     try {
-      if (gemini.hasKey()) explanation = await gemini.summarize("다음은 방금 생성된 TRPG 장면의 내부 연출 근거다. 개발자가 읽기 쉽게 3~4문장으로 왜 이런 장면이 나왔는지 설명하라. 순수 텍스트로만.", facts, "explain");
+      if (gemini.hasKey()) explanation = await gemini.summarize(promptSettings.getPrompt(state, "summary.explain"), facts, "explain");
     } catch (_) {}
     if (!explanation) explanation = `이 장면은 ${facts.split("\n").join("; ")} 라는 내부 상태를 바탕으로 연출되었습니다.`;
     res.json({ explanation, factors: facts, turn: lp && lp.turn });
@@ -518,6 +577,82 @@ app.post("/api/state/:id/advanced-mode", (req, res) => {
   state.settings.advanced_mode = !!req.body.enabled;
   campaignState.save(state);
   res.json({ ok: true, advanced_mode: state.settings.advanced_mode });
+});
+
+// PATCH_INDIVIDUAL_WORKS_ANALYSIS — set the status-window visibility mode
+// (off | litrpg | minimal). A genre-scoped exception to the no-numbers rule.
+app.post("/api/state/:id/status-window-mode", (req, res) => {
+  const statusWindow = require("./game/statusWindow");
+  const state = campaignState.load(req.params.id);
+  const r = statusWindow.setMode(state, (req.body && req.body.mode) || "");
+  if (!r.ok) return res.status(400).json({ error: r.reason, modes: [...statusWindow.MODES] });
+  campaignState.save(state);
+  res.json({ ok: true, mode: r.mode, window: statusWindow.build(state) });
+});
+
+// PATCH_IP_EXTENSIONS_PROJECT_MIO — fixed protagonist mode (play a canon char).
+app.post("/api/state/:id/fixed-protagonist", (req, res) => {
+  const deps = getDeps(req.params.id);
+  const state = campaignState.load(req.params.id);
+  const r = require("./player/fixedProtagonist").set(state, { enabled: !!(req.body && req.body.enabled), canon_ref: req.body && req.body.canon_ref }, deps.canonDb);
+  if (!r.ok) return res.status(400).json({ error: r.reason });
+  campaignState.save(state);
+  res.json(r);
+});
+
+// PATCH_IP_EXTENSIONS_PROJECT_MIO — meta-knowledge strict mode toggle.
+app.post("/api/state/:id/meta-knowledge-strict", (req, res) => {
+  const state = campaignState.load(req.params.id);
+  state.settings = state.settings || {};
+  state.settings.meta_knowledge_strict = !!(req.body && req.body.enabled);
+  campaignState.save(state);
+  res.json({ ok: true, meta_knowledge_strict: state.settings.meta_knowledge_strict });
+});
+
+// PATCH_IP_EXTENSIONS_PROJECT_MIO — soft-goal checklist CRUD.
+app.get("/api/soft-goals/:id", (req, res) => {
+  const state = campaignState.load(req.params.id);
+  res.json({ soft_goals: require("./player/softGoals").ensure(state) });
+});
+app.post("/api/soft-goals/:id", (req, res) => {
+  const softGoals = require("./player/softGoals");
+  const state = campaignState.load(req.params.id);
+  const action = (req.body && req.body.action) || "add";
+  let r;
+  if (action === "add") r = softGoals.add(state, req.body && req.body.text, "player");
+  else if (action === "toggle") r = softGoals.toggle(state, req.body && req.body.goal_id, req.body && req.body.done);
+  else if (action === "remove") r = softGoals.remove(state, req.body && req.body.goal_id);
+  else return res.status(400).json({ error: `unknown action "${action}"` });
+  if (!r.ok) return res.status(400).json({ error: r.reason });
+  campaignState.save(state);
+  res.json({ ...r, soft_goals: softGoals.ensure(state) });
+});
+
+// PATCH_IP_EXTENSIONS_PROJECT_MIO — multiple named dice pools: define / roll / delete.
+app.get("/api/dice-pools/:id", (req, res) => {
+  const state = campaignState.load(req.params.id);
+  res.json({ dice_pools: require("./game/dicePools").ensure(state) });
+});
+app.post("/api/dice-pools/:id", (req, res) => {
+  const dicePools = require("./game/dicePools");
+  const state = campaignState.load(req.params.id);
+  const action = (req.body && req.body.action) || "define";
+  let r;
+  if (action === "define") r = dicePools.define(state, req.body || {});
+  else if (action === "roll") r = dicePools.roll(state, req.body && req.body.pool_id, { bonus: (req.body && req.body.bonus) || 0 });
+  else if (action === "remove") r = dicePools.remove(state, req.body && req.body.pool_id);
+  else return res.status(400).json({ error: `unknown action "${action}"` });
+  if (!r.ok) return res.status(400).json({ error: r.reason });
+  if (action !== "roll") campaignState.save(state); // rolls don't persist
+  res.json({ ...r, dice_pools: dicePools.ensure(state) });
+});
+
+// PATCH_IP_EXTENSIONS_PROJECT_MIO — set a canon entity's Canon Level.
+app.post("/api/canon/:id/level", (req, res) => {
+  const deps = getDeps(req.params.id);
+  const r = deps.canonDb.setLevel(req.body && req.body.canon_id, req.body && req.body.level);
+  if (!r.ok) return res.status(400).json({ error: r.reason, levels: deps.canonDb.CANON_LEVELS });
+  res.json({ ok: true, canon_id: r.entity.canon_id, canon_level: r.entity.canon_level });
 });
 
 // ==========================================================================
@@ -558,7 +693,7 @@ app.get("/api/recap/:id", async (req, res) => {
     if (!dialogue) return res.json({ recap: null });
     gemini.setCampaign(id);
     let recap = await gemini.summarize(
-      "다음 TRPG 대화 기록을 3~5문장으로 요약해 '지난 이야기' 리캡을 작성하라. 순수 텍스트로만.",
+      promptSettings.getPrompt(state, "summary.recap"),
       dialogue
     );
     if (!recap) {
@@ -583,12 +718,40 @@ app.post("/api/state/:id/settings", (req, res) => {
     }
   }
   if (b.settings) {
-    for (const k of ["choices_ui", "content_intensity", "recap_hours", "world_event_period", "response_length", "expected_campaign_length", "low_token_mode", "rpd_limit", "player_agency_lock"]) {
+    for (const k of ["choices_ui", "content_intensity", "recap_hours", "world_event_period", "response_length", "expected_campaign_length", "low_token_mode", "rpd_limit", "player_agency_lock", "calm_mode"]) {
       if (b.settings[k] !== undefined) state.settings[k] = b.settings[k];
+    }
+    // Living World 자율 진행 주기(턴). 설정 탭 "세계 자율 진행 주기" 카드에서 조정.
+    // 1~500턴으로 클램프해 폭주/0값을 막는다.
+    for (const k of ["place_tick_period", "npc_goal_period", "news_period", "wanted_tick_period", "living_object_period", "living_npc_period", "resonance_period"]) {
+      if (b.settings[k] !== undefined) {
+        const n = Math.round(Number(b.settings[k]));
+        if (Number.isFinite(n)) state.settings[k] = Math.max(1, Math.min(500, n));
+      }
+    }
+    if (b.settings.content_intensity_notes && typeof b.settings.content_intensity_notes === "object") {
+      state.settings.content_intensity_notes = state.settings.content_intensity_notes || {};
+      for (const k of ["low", "medium", "high"]) {
+        if (b.settings.content_intensity_notes[k] !== undefined) {
+          state.settings.content_intensity_notes[k] = String(b.settings.content_intensity_notes[k]).slice(0, 600);
+          state.custom_registry = dimensionRegistry.ensure(state);
+          state.custom_registry.intensity_guides[k] = state.settings.content_intensity_notes[k];
+        }
+      }
     }
   }
   if (Array.isArray(b.house_rules)) {
     state.house_rules = b.house_rules.map((r) => String(r).slice(0, 500)).slice(0, 20);
+  }
+  if (b.prompt_overrides) {
+    state.prompt_overrides = state.prompt_overrides || { enabled: false, system_addendum: "", extraction_addendum: "" };
+    if (b.prompt_overrides.enabled !== undefined) state.prompt_overrides.enabled = !!b.prompt_overrides.enabled;
+    if (b.prompt_overrides.system_addendum !== undefined) state.prompt_overrides.system_addendum = String(b.prompt_overrides.system_addendum || "").slice(0, 6000);
+    if (b.prompt_overrides.extraction_addendum !== undefined) state.prompt_overrides.extraction_addendum = String(b.prompt_overrides.extraction_addendum || "").slice(0, 4000);
+  }
+  if (b.prompt_settings) {
+    promptSettings.ensure(state);
+    if (b.prompt_settings.enabled !== undefined) state.prompt_settings.enabled = !!b.prompt_settings.enabled;
   }
   // Phase 6 D — player-chosen display name / icon (never touches meta.world_name,
   // which stays whatever the wizard/AI generated).
@@ -597,7 +760,71 @@ app.post("/api/state/:id/settings", (req, res) => {
     if (b.meta.icon !== undefined) state.meta.icon = String(b.meta.icon || "📖").slice(0, 8);
   }
   campaignState.save(state);
-  res.json({ ok: true, narrative_dna: state.narrative_dna, settings: state.settings, house_rules: state.house_rules, meta: state.meta });
+  res.json({ ok: true, narrative_dna: state.narrative_dna, settings: state.settings, house_rules: state.house_rules, prompt_overrides: state.prompt_overrides, prompt_settings: state.prompt_settings, meta: state.meta });
+});
+
+app.get("/api/prompts/:id", (req, res) => {
+  const state = campaignState.load(req.params.id);
+  res.json(promptSettings.clientPayload(state));
+});
+
+app.post("/api/prompts/:id", (req, res) => {
+  const state = campaignState.load(req.params.id);
+  promptSettings.ensure(state);
+  if (req.body && req.body.enabled !== undefined) state.prompt_settings.enabled = !!req.body.enabled;
+  campaignState.save(state);
+  res.json(promptSettings.clientPayload(state));
+});
+
+app.post("/api/prompts/:id/:key", (req, res) => {
+  const state = campaignState.load(req.params.id);
+  const r = promptSettings.setItem(state, req.params.key, req.body || {});
+  if (!r.ok) return res.status(404).json({ error: r.reason });
+  campaignState.save(state);
+  res.json({ ok: true, prompts: promptSettings.clientPayload(state) });
+});
+
+// --- Custom Dimension Registry --------------------------------------------
+app.get("/api/registry/:id", (req, res) => {
+  const state = campaignState.load(req.params.id);
+  res.json({ registry: dimensionRegistry.ensure(state), hidden_variables: (state.player && state.player.hidden_variables) || {} });
+});
+
+app.post("/api/registry/:id/:kind", (req, res) => {
+  try {
+    const state = campaignState.load(req.params.id);
+    const reg = dimensionRegistry.ensure(state);
+    const map = { dimension: "dimensions", emotion: "emotion_vocab", theme: "themes", scene: "scene_types" };
+    const listKey = map[req.params.kind];
+    if (!listKey) return res.status(400).json({ error: "invalid registry kind" });
+    const item = dimensionRegistry.upsert(reg[listKey], req.body || {});
+    if (listKey === "dimensions" && item.kind === "hidden" && state.player) {
+      state.player.hidden_variables = state.player.hidden_variables || {};
+      if (state.player.hidden_variables[item.id] === undefined) state.player.hidden_variables[item.id] = Number(item.default_value ?? 0.5);
+    }
+    campaignState.save(state);
+    res.json({ ok: true, item, registry: reg });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+app.post("/api/registry/:id/:kind/:itemId/archive", (req, res) => {
+  const state = campaignState.load(req.params.id);
+  const reg = dimensionRegistry.ensure(state);
+  const map = { dimension: "dimensions", emotion: "emotion_vocab", theme: "themes", scene: "scene_types" };
+  const list = reg[map[req.params.kind]];
+  if (!list) return res.status(400).json({ error: "invalid registry kind" });
+  const item = list.find((x) => x.id === req.params.itemId);
+  if (!item) return res.status(404).json({ error: "not found" });
+  item.archived = req.body && req.body.archived !== undefined ? !!req.body.archived : true;
+  campaignState.save(state);
+  res.json({ ok: true, item });
+});
+
+// --- tester feedback -------------------------------------------------------
+app.get("/api/feedback/:id", (req, res) => res.json({ feedback: feedbackStore.load(req.params.id) }));
+app.post("/api/feedback/:id", (req, res) => {
+  try { res.json({ ok: true, feedback: feedbackStore.add(req.params.id, req.body || {}) }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // GET /api/usage/:id — usage/cost monitor (Wave 3).
@@ -695,18 +922,96 @@ app.post("/api/import", (req, res) => {
   res.json({ ok: true, campaign_id: id, mode: "full" });
 });
 
+function removeCampaignFiles(id, { keepState = false } = {}) {
+  for (const suffix of ["_memory", "_canon", "_usage", "_undo", "_notes", "_turnlog"]) {
+    const p = path.join(campaignState.DATA_DIR, `${id}${suffix}.json`);
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+  }
+  if (!keepState && fs.existsSync(campaignState.statePath(id))) fs.unlinkSync(campaignState.statePath(id));
+  depsByCampaign.delete(id);
+}
+
+function createRiaSample(id) {
+  removeCampaignFiles(id);
+  const state = campaignState.load(id);
+  const deps = getDeps(id);
+  const body = {
+    world_name: "안개의 항구",
+    era: "modern",
+    genre_preset: "modern",
+    background_description: "비가 자주 내리는 오래된 항구 도시. 폐창고와 작은 서점, 선착장 게시판 사이로 오래된 약속과 소문이 천천히 되살아난다.",
+    world_notes: "초반부는 리아와 플레이어가 오래된 다리 근처에서 다시 마주치는 조용한 체험형 소설 톤으로 시작한다.",
+    regions: [
+      { canon_id: "loc_old_town_bridge", name: "구시가지 다리", description: "항구와 구시가를 잇는 낡은 돌다리.", notable_features: ["비 냄새", "젖은 가로등", "오래된 약속의 장소"] },
+      { canon_id: "loc_harbor_bookshop", name: "항구 서점", description: "선원들의 기록과 오래된 편지를 맡아두는 작은 서점.", notable_features: ["낡은 편지", "바다 냄새"] },
+    ],
+    factions: [
+      { canon_id: "faction_harbor_watch", name: "항구 감시단", description: "항구의 질서와 소문을 동시에 관리하는 느슨한 조직.", goal: "최근 사라진 화물과 사람들의 흔적을 쫓는다." },
+    ],
+    player: { birth_name: "방문자", species: "human", background: "몇 년 만에 안개의 항구로 돌아온 사람.", core_values: ["기억", "약속"], psychology: { core_fear: "중요한 말을 또 놓치는 것", desire: "과거의 빈칸을 확인하는 것" } },
+    npcs: [
+      { canon_id: "char_ria", birth_name: "리아", species: "human", role: "npc", background: "플레이어와 오래전 약속을 나눈 항구 서점의 기록 담당자.", core_values: ["기억", "조심스러운 진심"], goal_current: "사라진 편지 묶음의 행방을 찾기", current_location: "loc_old_town_bridge", relationship_to_player_type: "친구", psychology: { attachment_style: "avoidant", core_fear: "다시 기대했다가 버려지는 것", desire: "한 번은 제대로 이유를 듣는 것", defense_mechanism: "농담으로 말을 돌림" } },
+    ],
+    narrative_dna: { tone: 3, emotion: 5, politics: 1, survival: 1, horror: 1, mystery: 3, romance: 2, exploration: 2 },
+    expected_campaign_length: "normal",
+  };
+  wizardGen.registerAll(deps.kernel, state, body);
+  state.meta = { world_name: body.world_name, era: body.era, genre_preset: body.genre_preset, created_at: new Date().toISOString(), display_name: "리아 샘플 캠페인", icon: "🌧" };
+  state.world.background_description = body.background_description;
+  state.world.notes = body.world_notes;
+  state.player.name = body.player.birth_name;
+  state.player.background = body.player.background;
+  state.player.traits = body.player.core_values;
+  state.player.psychology = body.player.psychology;
+  state.settings.choices_ui = true;
+  state.custom_registry = dimensionRegistry.ensure(state);
+  state.custom_registry.onboarding.intro_seen = true;
+  state.custom_registry.onboarding.scenario_preset = "ria_sample";
+  state.recent_dialogue = [{
+    turn: 0,
+    in_world_date: state.in_world_date,
+    player: "다리 위에서 리아를 발견하고, 아직 말을 걸지 못한 채 멈춰 선다.",
+    gm: "비는 오래된 돌다리의 틈마다 고여 있었다. 항구 쪽에서 올라온 안개가 가로등 아래로 낮게 흐르고, 그 너머에서 리아가 낡은 우산을 접고 있었다.\n\n그녀는 당신을 알아본다. 아주 짧게, 숨을 삼키는 표정이 지나간다.\n\n\"정말 돌아왔네.\"\n\n리아는 그렇게 말하고 나서야 시선을 옆으로 돌린다. 말끝에 묻은 물기 때문인지, 오래 참은 감정 때문인지는 아직 알 수 없다.\n\n- 리아에게 조용히 인사한다\n- 왜 이곳에 있었는지 묻는다\n- 말없이 다리 난간에 기대어 함께 비를 본다",
+  }];
+  campaignState.save(state);
+  return state;
+}
+
+app.post("/api/sample/ria", (req, res) => {
+  const id = req.body && req.body.campaign_id ? String(req.body.campaign_id).trim() : "sample_ria";
+  if (!/^[\w-]+$/.test(id)) return res.status(400).json({ error: "valid campaign_id required" });
+  if (fs.existsSync(campaignState.statePath(id)) && !(req.body && req.body.overwrite)) return res.status(409).json({ error: "campaign already exists", campaign_id: id });
+  const state = createRiaSample(id);
+  res.json({ ok: true, campaign_id: state.campaign_id });
+});
+
+app.post("/api/campaign/:id/reset", (req, res) => {
+  const id = req.params.id;
+  if (!fs.existsSync(campaignState.statePath(id))) return res.status(404).json({ error: "not found" });
+  const old = campaignState.load(id);
+  const backupId = `${id}_before_reset_${Date.now().toString(36)}`;
+  campaignState.save({ ...old, campaign_id: backupId, db_refs: { memory_db: `${backupId}_memory.json`, canon_db: `${backupId}_canon.json` } });
+  removeCampaignFiles(id, { keepState: false });
+  const fresh = campaignState.load(id);
+  fresh.meta = { ...fresh.meta, world_name: (old.meta && old.meta.world_name) || "다시 시작한 이야기", display_name: old.meta && old.meta.display_name, icon: old.meta && old.meta.icon || "📖" };
+  campaignState.save(fresh);
+  res.json({ ok: true, campaign_id: id, backup_id: backupId });
+});
+
 // --- wizard (Phase 4 A2-A4, built now) --------------------------------------
 app.post("/api/wizard/world", async (req, res) => {
   try {
     gemini.setCampaign("wizard");
-    res.json(await wizardGen.generateWorld((req.body.text || "").slice(0, 2000)));
+    const promptState = req.body.campaign_id && fs.existsSync(campaignState.statePath(req.body.campaign_id)) ? campaignState.load(req.body.campaign_id) : null;
+    res.json(await wizardGen.generateWorld((req.body.text || "").slice(0, 2000), promptState));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post("/api/wizard/characters", async (req, res) => {
   try {
     gemini.setCampaign("wizard");
-    res.json(await wizardGen.generateCharacters((req.body.text || "").slice(0, 2000), req.body.world || {}, req.body.npc_count || 3));
+    const promptState = req.body.campaign_id && fs.existsSync(campaignState.statePath(req.body.campaign_id)) ? campaignState.load(req.body.campaign_id) : null;
+    res.json(await wizardGen.generateCharacters((req.body.text || "").slice(0, 2000), req.body.world || {}, req.body.npc_count || 3, promptState));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -716,6 +1021,9 @@ app.post("/api/wizard/suggest", async (req, res) => {
   try {
     gemini.setCampaign("wizard");
     const { field, context } = req.body || {};
+    if (context && context.campaign_id && fs.existsSync(campaignState.statePath(context.campaign_id))) {
+      context.prompt_state = campaignState.load(context.campaign_id);
+    }
     res.json(await wizardGen.suggestField(field, context || {}));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -728,9 +1036,10 @@ app.post("/api/wizard/create", (req, res) => {
   if (!/^[\w-]+$/.test(id)) return res.status(400).json({ error: "valid campaign_id required" });
   if (fs.existsSync(campaignState.statePath(id))) return res.status(409).json({ error: "campaign already exists" });
 
-  // Phase 8 D2 — structural content guardrail before any canon registration.
+  // Local wizard guardrail is advisory only. School-life campaigns often contain
+  // age/romance keywords in harmless setup text, so creation should not hard-stop
+  // before the player can edit and start the campaign.
   const guardrail = contentGuardrail(b);
-  if (guardrail.length) return res.status(422).json({ error: "content_guardrail", problems: guardrail });
 
   const state = campaignState.load(id); // fresh state
   const deps = getDeps(id);
@@ -756,8 +1065,8 @@ app.post("/api/wizard/create", (req, res) => {
   state.world = state.world || {};
   state.world.tech_level = b.tech_level || TECH_BY_ERA[b.era] || TECH_BY_ERA[b.genre_preset] || "fantasy_low";
   // C1/C2 — free-text world background + notes, referenced in the GM prompt.
-  if (b.background_description) state.world.background_description = String(b.background_description).slice(0, 4000);
-  if (b.world_notes) state.world.notes = String(b.world_notes).slice(0, 4000);
+  if (b.background_description) state.world.background_description = String(b.background_description).slice(0, 200000);
+  if (b.world_notes) state.world.notes = String(b.world_notes).slice(0, 200000);
   // Phase 10 M1 — register the genre-based starting stat (rate-limit exempt).
   require("./game/genreStatPresets").applyPreset(state);
   if (b.player) {
@@ -767,9 +1076,31 @@ app.post("/api/wizard/create", (req, res) => {
     if (Array.isArray(b.player.core_values)) state.player.traits = b.player.core_values.slice(0, 5);
     if (b.player.notes) state.player.notes = String(b.player.notes).slice(0, 4000); // C2
   }
+  state.custom_registry = dimensionRegistry.ensure(state);
+  state.custom_registry.onboarding.content_reviewed = true;
+  state.custom_registry.onboarding.scenario_preset = b.scenario_preset || null;
+  if (b.scenario_preset && START_OPENERS[b.scenario_preset]) {
+    state.recent_dialogue = [{
+      turn: 0,
+      in_world_date: state.in_world_date,
+      player: "이야기를 시작한다.",
+      gm: `${START_OPENERS[b.scenario_preset]}\n\n- 주변을 천천히 둘러본다\n- 가장 먼저 눈에 들어온 사람에게 다가간다\n- 지금 이곳에 온 이유를 떠올린다`,
+    }];
+  }
+  const importItems = Array.isArray(b.import_items) ? b.import_items.slice(0, 500) : [];
+  const importResults = importItems.length ? notionImport.registerItems(deps.kernel, state, deps.canonDb, importItems) : [];
   campaignState.save(state);
   const failed = results.filter((r) => !r.approved);
-  res.json({ ok: true, campaign_id: id, registered: results.length - failed.length, failed });
+  const importFailed = importResults.filter((r) => !r.ok);
+  res.json({
+    ok: true,
+    campaign_id: id,
+    registered: results.length - failed.length,
+    failed,
+    imported_settings: importResults.length - importFailed.length,
+    import_failed: importFailed,
+    guardrail_warnings: guardrail,
+  });
 });
 
 // --- player tab (Wave 2) ----------------------------------------------------
@@ -898,7 +1229,67 @@ app.get("/api/worldtab/:id", (req, res) => {
       const e = deps.canonDb.get(m.npc_ref);
       return { ...m, npc_name: (e && e.data && e.data.birth_name) || m.npc_ref };
     }),
+    // Phase 16 · World News — 자동 뉴스 피드(신문/게시판/공고/소문) + 미열람 수.
+    news: worldNews.playerVisible(state),
+    news_unseen: worldNews.unseenCount(state),
+    // Phase 16 · Living Places — 플레이어가 아는(발견한) 장소들의 현재 상태/변천사.
+    places: deps.canonDb.all()
+      .filter((e) => e.type === "World" && e.data && e.data.discovered_by_player)
+      .map((e) => ({
+        canon_id: e.canon_id,
+        name: (e.data.notable_features || [])[0] || e.data.region || e.canon_id,
+        region: e.data.region || null,
+        place_kind: e.data.place_kind || null,
+        stage: e.data.place_stage || null,
+        trend: e.data.place_trend || null,
+        history: (e.data.place_history || []).slice().reverse(),
+      })),
+    // Phase 16 · World History Book — 자동 편찬된 세계 연대기.
+    history: worldHistory.build(state, deps.canonDb, deps.memoryEngine),
+    // Phase 16 · Dream System — 최근 꿈 기록(최신순).
+    dreams: (state.dreams || []).slice().reverse(),
+    // Phase 16+ · Festivals / Wanted / Organizations / Region Reputation.
+    festivals: festivals.playerVisible(state),
+    wanted: wantedSys.playerVisible(state),
+    organizations: organizations.playerVisible(state),
+    region_reputation: regionReputation.playerVisible(state),
   });
+});
+
+// Phase 16+ · Entity Inspector — one lens over everything about an entity.
+app.get("/api/inspect/:id/:entityId", (req, res) => {
+  const deps = getDeps(req.params.id);
+  const state = campaignState.load(req.params.id);
+  res.json(inspector.inspect(state, deps.canonDb, deps.memoryEngine, req.params.entityId) || { error: "not found" });
+});
+
+// Phase 16+ · Personal Calendar — list + add an entry.
+app.get("/api/calendar/:id", (req, res) => {
+  const state = campaignState.load(req.params.id);
+  calendar.sync(state);
+  campaignState.save(state);
+  res.json({ upcoming: calendar.playerVisible(state) });
+});
+app.post("/api/calendar/:id", (req, res) => {
+  const state = campaignState.load(req.params.id);
+  const b = req.body || {};
+  const entry = calendar.add(state, { title: b.title, kind: b.kind, day: Number(b.day) }, state.turn_number);
+  campaignState.save(state);
+  res.json({ ok: !!entry, entry });
+});
+
+// Phase 16+ · Home/Property — list.
+app.get("/api/property/:id", (req, res) => {
+  const state = campaignState.load(req.params.id);
+  res.json({ properties: property.playerVisible(state) });
+});
+
+// Phase 16 · World News — mark all news read (clears the unread badge).
+app.post("/api/worldtab/:id/news-seen", (req, res) => {
+  const state = campaignState.load(req.params.id);
+  const n = worldNews.markAllSeen(state);
+  campaignState.save(state);
+  res.json({ ok: true, marked: n });
 });
 
 // --- wiki (Wave 2) ----------------------------------------------------------
@@ -930,13 +1321,124 @@ app.get("/api/relations/:id", (req, res) => {
       const e = deps.canonDb.get(m.npc_ref);
       return { ...m, npc_name: (e && e.data && e.data.birth_name) || m.npc_ref };
     }),
+    // Phase 16 · NPC Goal System — met NPCs' long-term goals + progress.
+    npc_goals: npcGoals.playerVisible(state, deps.canonDb),
+    // Phase 16 · Nickname System — how each NPC addresses the player.
+    nicknames: nicknames.playerVisible(state, deps.canonDb),
+    // Phase 16+ · Dynamic Title / Promise / Family Tree.
+    titles: titles.playerVisible(state),
+    promises: promises.playerVisible(state, deps.canonDb),
+    family: familyTree.members(state).map((ref) => familyTree.treeFor(state, deps.canonDb, ref)),
   });
+});
+
+// PATCH_WEBNOVEL_TECHNIQUES — register a DELIBERATE narrative trick so the
+// Watchdog won't "correct" the resulting apparent contradiction. Pre-registration
+// only: it takes effect from this turn forward, never retroactively.
+app.post("/api/campaign/:id/narrative-trick", (req, res) => {
+  const integrityWatch = require("./meta/integrityWatch");
+  const state = campaignState.load(req.params.id);
+  const r = integrityWatch.registerTrick(state, {
+    kind: (req.body && req.body.kind) || "",
+    description: (req.body && req.body.description) || "",
+    canon_refs: (req.body && req.body.canon_refs) || [],
+  });
+  if (!r.ok) return res.status(400).json({ error: r.reason });
+  campaignState.save(state);
+  res.json({ ok: true, trick: r.trick, kinds: [...integrityWatch.TRICK_KINDS] });
+});
+
+// PATCH_NARRATIVE_ACCUMULATION_GAPS — narrative arcs (growth through-lines),
+// recurring motifs, and active echoes (departed/dead but still-felt NPCs).
+app.get("/api/story-arcs/:id", (req, res) => {
+  const deps = getDeps(req.params.id);
+  const state = campaignState.load(req.params.id);
+  const echoNpc = require("./npc/echoNpc");
+  res.json({
+    narrative_arcs: (state.narrative_arcs || []).map((a) => ({
+      ...a,
+      canon_names: (a.canon_refs || []).map((r) => { const e = deps.canonDb.get(r); return (e && e.data && e.data.birth_name) || r; }),
+    })),
+    motifs: (state.motifs || []).slice().sort((a, b) => b.occurrences - a.occurrences),
+    echoes: echoNpc.activeEchoes(deps.canonDb).map((e) => ({ canon_ref: e.canon_id, name: (e.data.birth_name || e.canon_id), echo_state: e.data.echo_state })),
+    // PATCH_WEBNOVEL_TECHNIQUES — rhythm debt, per-NPC 캐빨 arcs, registered tricks.
+    tension_debt: state.tension_debt || null,
+    npc_arcs: (state.npc_arcs || []).map((a) => { const e = deps.canonDb.get(a.npc_ref); return { ...a, npc_name: (e && e.data && e.data.birth_name) || a.npc_ref }; }),
+    narrative_tricks: (state.narrative_tricks || []).filter((t) => t.active),
+    // PATCH_INDIVIDUAL_WORKS_ANALYSIS — status window, neglected cast, climax fatigue.
+    status_window: require("./game/statusWindow").build(state),
+    neglected_cast: require("./meta/castNeglect").detect(state, deps.canonDb),
+    climax_fatigue: require("./directors/climaxFatigue").assess(state),
+    // PATCH_IP_EXTENSIONS_PROJECT_MIO — IP toggles, soft goals, dice pools, core canon.
+    fixed_protagonist: (state.settings && state.settings.fixed_protagonist) || { enabled: false },
+    meta_knowledge_strict: !!(state.settings && state.settings.meta_knowledge_strict),
+    soft_goals: state.soft_goals || [],
+    dice_pools: state.dice_pools || [],
+    core_canon: (deps.canonDb.all() || []).filter((e) => (e.canon_level || "campaign") === "core").map((e) => ({ canon_id: e.canon_id, name: (e.data && e.data.birth_name) || e.canon_id })),
+    // PATCH_CHAPTER_CHECKLIST — chapters with per-item done state + canon names.
+    chapters: (state.chapters || []).map((c) => ({
+      ...c,
+      checklist: (c.checklist || []).map((i) => {
+        const e = i.kind === "canon" ? deps.canonDb.get(i.ref) : null;
+        const label = e ? (e.data.birth_name || i.ref) : i.ref;
+        return { ...i, label };
+      }),
+    })),
+  });
+});
+
+// --- writer workspace: Notion-like world/character/manuscript pages ----------
+app.get("/api/writer/:id", (req, res) => {
+  const state = campaignState.load(req.params.id);
+  const workspace = ensureWriterWorkspace(state);
+  res.json({ workspace, world_name: state.meta && state.meta.world_name, campaign_id: state.campaign_id });
+});
+
+app.post("/api/writer/:id/page", (req, res) => {
+  const state = campaignState.load(req.params.id);
+  const workspace = ensureWriterWorkspace(state);
+  const page = sanitizeWriterPage(req.body && req.body.page);
+  const idx = workspace.pages.findIndex((p) => p.id === page.id);
+  if (idx >= 0) {
+    page.created_at = workspace.pages[idx].created_at || page.created_at;
+    workspace.pages[idx] = page;
+  } else {
+    workspace.pages.push(page);
+  }
+  workspace.active_page_id = page.id;
+  workspace.pages = workspace.pages.slice(0, 200);
+  campaignState.save(state);
+  res.json({ ok: true, workspace, page });
+});
+
+app.post("/api/writer/:id/active", (req, res) => {
+  const state = campaignState.load(req.params.id);
+  const workspace = ensureWriterWorkspace(state);
+  const pageId = String((req.body && req.body.page_id) || "");
+  if (workspace.pages.some((p) => p.id === pageId)) workspace.active_page_id = pageId;
+  campaignState.save(state);
+  res.json({ ok: true, workspace });
+});
+
+app.delete("/api/writer/:id/page/:pageId", (req, res) => {
+  const state = campaignState.load(req.params.id);
+  const workspace = ensureWriterWorkspace(state);
+  if (workspace.pages.length <= 1) return res.status(409).json({ error: "last page cannot be deleted" });
+  workspace.pages = workspace.pages.filter((p) => p.id !== req.params.pageId);
+  if (!workspace.pages.some((p) => p.id === workspace.active_page_id)) {
+    workspace.active_page_id = workspace.pages[0] && workspace.pages[0].id;
+  }
+  campaignState.save(state);
+  res.json({ ok: true, workspace });
 });
 
 // --- inventory tab (Wave 2) --------------------------------------------------
 app.get("/api/inventory/:id", (req, res) => {
   const state = campaignState.load(req.params.id);
-  res.json({ items: state.inventory || [] });
+  // Phase 16+ · Living Objects — attach each item's current condition + history.
+  const cond = {};
+  for (const c of livingObjects.playerVisible(state)) cond[c.name] = c;
+  res.json({ items: (state.inventory || []).map((it) => ({ ...it, living: cond[it.name] || null })) });
 });
 
 // DELETE /api/campaign/:id — launcher card delete.
@@ -976,6 +1478,85 @@ app.post("/api/runtime-config", (req, res) => {
   res.json({ ok: true, ...cfg, keys: gemini.keysStatus() });
 });
 
+// ==========================================================================
+// PATCH Notion Import — 링크 자동 가져오기 (§2 연동 · §3 수집 · §4 분류 ·
+// §5 중복 · §6 리뷰는 프론트 · §7 등록 · §8 비용).
+// ==========================================================================
+
+// §2 — Notion 연동 토큰 (평문 저장 금지: notionStore가 암호문만 보관, 값은 미노출).
+app.get("/api/notion/config", (req, res) => res.json(notionStore.status()));
+app.post("/api/notion/config", (req, res) => {
+  const token = (req.body && req.body.token) || "";
+  if (typeof req.body.default_depth !== "undefined") notionStore.setDefaultDepth(req.body.default_depth);
+  if (!token) return res.json({ ok: true, ...notionStore.status() }); // 깊이만 갱신
+  try { return res.json({ ok: true, ...notionStore.setToken(token) }); }
+  catch (e) { return res.status(400).json({ error: e.message }); }
+});
+app.delete("/api/notion/config", (req, res) => res.json({ ok: true, ...notionStore.clear() }));
+
+// §3 — 재귀 수집(깊이 제한) + §5 중복 그룹핑. LLM 호출 없음.
+app.post("/api/notion/discover", async (req, res) => {
+  try {
+    const { url, max_depth } = req.body || {};
+    if (!url) return res.status(400).json({ error: "Notion 페이지 링크가 필요합니다." });
+    const r = await notionClient.discover(url, max_depth);
+    const pages = notionImport.groupDuplicates(r.pages || []);
+    res.json({ ok: true, pages, mock: !!r.mock, truncated: !!r.truncated, count: pages.length });
+  } catch (e) { res.status(e.status === 401 ? 401 : 500).json({ error: e.message }); }
+});
+
+// §4 — 선택 페이지 본문 fetch + 구조화 분류. usage는 notion_import 카테고리로 적재.
+app.post("/api/notion/analyze", async (req, res) => {
+  try {
+    const { campaign_id, pages } = req.body || {};
+    const list = Array.isArray(pages) ? pages.slice(0, 200) : [];
+    if (!list.length) return res.status(400).json({ error: "분석할 페이지가 없습니다." });
+    gemini.setCampaign(campaign_id || "notion_import");
+    const promptState = campaign_id && fs.existsSync(campaignState.statePath(campaign_id)) ? campaignState.load(campaign_id) : null;
+    const items = [];
+    for (const p of list) {
+      const text = await notionClient.fetchPageText(p.id);
+      const cls = await notionImport.classifyPageText(p.title || "", text, promptState);
+      for (const expanded of notionImport.expandImportItem(cls, p.title || "")) {
+        items.push({ page_id: p.id, page_title: p.title || "", ...expanded });
+      }
+    }
+    res.json({ ok: true, items, analyzed: items.length, mock: !gemini.hasKey() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// §4(파일 경로) — 업로드한 .md/.txt 문서 텍스트를 그대로 분류. Notion과 같은
+// 분류 파이프라인·usage 카테고리(notion_import)를 재사용한다. 클라이언트가
+// 배치로 나눠 보내므로(수십 개 파일 대응) 한 요청은 작게 유지된다.
+app.post("/api/import/analyze-text", async (req, res) => {
+  try {
+    const { campaign_id, docs } = req.body || {};
+    const list = Array.isArray(docs) ? docs.slice(0, 200) : [];
+    if (!list.length) return res.status(400).json({ error: "분석할 문서가 없습니다." });
+    gemini.setCampaign(campaign_id || "notion_import");
+    const promptState = campaign_id && fs.existsSync(campaignState.statePath(campaign_id)) ? campaignState.load(campaign_id) : null;
+    const items = [];
+    for (const d of list) {
+      const cls = await notionImport.classifyPageText(d.title || "", d.text || "", promptState);
+      for (const expanded of notionImport.expandImportItem(cls, d.title || "")) {
+        items.push({ page_id: d.id || d.title, page_title: d.title || "", ...expanded });
+      }
+    }
+    res.json({ ok: true, items, analyzed: items.length, mock: !gemini.hasKey() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// §7 — 사람이 리뷰·편집한 항목을 정식 경로로 등록(면제 없음).
+app.post("/api/notion/import", (req, res) => {
+  const { campaign_id, items } = req.body || {};
+  if (!campaign_id || !fs.existsSync(campaignState.statePath(campaign_id))) return res.status(404).json({ error: "campaign not found" });
+  const deps = getDeps(campaign_id);
+  const state = campaignState.load(campaign_id);
+  const results = notionImport.registerItems(deps.kernel, state, deps.canonDb, items || []);
+  campaignState.save(state);
+  res.json({ ok: true, results, imported: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok) });
+});
+
 // GET /api/status — runtime mode.
 app.get("/api/status", (req, res) => {
   res.json({ mock: !gemini.hasKey(), narrative_model: gemini.NARRATIVE_MODEL, extract_model: gemini.EXTRACT_MODEL });
@@ -1013,7 +1594,7 @@ app.post("/api/themes/generate", async (req, res) => {
     let tokens = null;
     if (gemini.hasKey()) {
       gemini.setCampaign("theme");
-      const prompt = `너는 UI 테마 디자이너다. 아래 설명에 맞는 CSS 변수 값을 JSON으로만 출력하라. 허용 키: ${[...themes.ALLOWED_KEYS].join(", ")}. 색상은 hex, 폰트는 [${themes.ALLOWED_FONTS.join(", ")}] 중에서만, --radius-base는 0~24 숫자(px). 형식: { "tokens": { "--color-bg": "#..." } }`;
+      const prompt = promptSettings.getPrompt(null, "theme.generate", undefined, { allowed_keys: [...themes.ALLOWED_KEYS].join(", "), allowed_fonts: themes.ALLOWED_FONTS.join(", ") });
       try { const g = await gemini.generateStructured(prompt, desc, { temperature: 0.4 }); tokens = g && g.tokens; } catch (_) {}
     }
     if (!tokens) {
@@ -1043,7 +1624,7 @@ app.post("/api/plugins/generate", async (req, res) => {
     let manifest = null;
     if (gemini.hasKey()) {
       gemini.setCampaign("plugin");
-      const prompt = `너는 게임 확장 팩 설계자다. 아래 설명에 맞는 플러그인 매니페스트를 JSON으로만 출력하라. extends 배열의 각 항목 type은 [${Object.keys(plugins.EXTENSION_POINTS).join(", ")}] 중 하나만. 형식: { "name": "", "extends": [{ "type": "scene_type", "value": { "id": "", "label": "", "tone_notes": "" } }] }`;
+      const prompt = promptSettings.getPrompt(null, "plugin.generate", undefined, { extension_points: Object.keys(plugins.EXTENSION_POINTS).join(", ") });
       try { manifest = await gemini.generateStructured(prompt, desc, { temperature: 0.4 }); } catch (_) {}
     }
     if (!manifest) {

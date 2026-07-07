@@ -75,7 +75,18 @@ function applyPlayerDelta(state, npcRef, deltas, meta) {
     edge[k] = clamp((edge[k] || 0) + Number(deltas[k] || 0));
   }
   edge.last_changed_turn = state.turn_number;
-  edge.change_history = [...(edge.change_history || []), { turn: state.turn_number, deltas, summary: (meta && meta.summary) || "" }].slice(-20);
+  // Phase 16 · Relationship History — store WHY it changed (in-world date + the
+  // dominant dimension direction) so the relations tab can render a "왜 그렇게
+  // 되었는가" log rather than a bare number.
+  const strongest = Object.entries(deltas || {}).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))[0];
+  edge.change_history = [...(edge.change_history || []), {
+    turn: state.turn_number,
+    in_world_date: state.in_world_date || null,
+    deltas,
+    summary: (meta && meta.summary) || "",
+    dimension: strongest ? strongest[0] : null,
+    direction: strongest ? (strongest[1] >= 0 ? "up" : "down") : null,
+  }].slice(-20);
   return edge;
 }
 

@@ -41,8 +41,11 @@ async function api(path, opts) {
     // Wave 1: the banner is player-facing — short and generic. Full detail
     // (msg) still reaches the thrown Error for the debug tab / console.
     if (res.status === 429 || res.status >= 500) showBanner("서버/AI 응답이 지연되고 있습니다 — 잠시 후 다시 시도해주세요.");
-    console.error("API error:", path, msg);
-    throw new Error(msg);
+    console.error("API error:", path, msg, data || "");
+    const err = new Error(msg);
+    err.status = res.status;
+    err.data = data;
+    throw err;
   }
   return data;
 }

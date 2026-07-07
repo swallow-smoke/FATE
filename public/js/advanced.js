@@ -70,7 +70,19 @@ function buildRows(tab, d) {
     if (b) push("토큰 예산", `사용 ~${b.used} / 예산 ${b.total_budget} (${(b.trimmed || []).length ? "블록 일부 잘림" : "여유"})`);
     const cc = p.context_cache || {};
     push("컨텍스트 캐시", cc.cached ? `key ${cc.key} · 적중 ${cc.hits}회 · ${cc.has_handle ? "핸들 있음" : "핸들 없음(mock)"}` : "미등록");
-    if (p.last_prompt) { push(`전송 프롬프트 (${p.last_prompt.turn}턴)`, p.last_prompt.system_prompt); push("플레이어 입력", p.last_prompt.player_input); }
+    if (p.last_prompt) {
+      push(`서사 생성 프롬프트 (${p.last_prompt.turn}턴)`, p.last_prompt.system_prompt);
+      if (p.last_prompt.extraction_prompt) push("후처리 추출 프롬프트", p.last_prompt.extraction_prompt);
+      push("플레이어 입력", p.last_prompt.player_input);
+    }
+  } else if (tab === "registry") {
+    const r = d.registry || {};
+    (r.dimensions || []).forEach((x) => push(`내면 변수: ${x.label || x.id}`, `${x.id}${x.archived ? " · 숨김" : ""} — ${x.description || ""}`));
+    (r.emotion_vocab || []).forEach((x) => push(`감정: ${x.label || x.id}`, `${x.id}${x.archived ? " · 숨김" : ""} — ${x.description || ""}`));
+    (r.themes || []).forEach((x) => push(`주제: ${x.label || x.id}`, `${x.id}${x.archived ? " · 숨김" : ""} — ${x.description || ""}`));
+    (r.scene_types || []).forEach((x) => push(`장면: ${x.label || x.id}`, `${x.id}${x.archived ? " · 숨김" : ""} — ${x.tone_notes || x.description || ""}`));
+  } else if (tab === "feedback") {
+    (d.feedback || []).slice().reverse().forEach((f) => push(`${f.turn}턴 · ${f.reason || "피드백"}`, `${f.note || ""} · ${f.created_at}`));
   } else if (tab === "performance") {
     // Phase 14 X2 — AI Profiler: per-turn stage timing.
     (d.performance || []).slice(-15).reverse().forEach((r) => push(`${r.turn}턴`, `서사 ${r.narrative_ms}ms · 추출 ${r.extraction_ms}ms · 총 ${r.total_ms}ms · 기억 ${r.memory_count} · Canon ${r.canon_count}`));
@@ -84,7 +96,7 @@ function renderAdvBody() {
   const q = ADV.q.trim().toLowerCase();
   if (q) {
     // Search spans every sub-tab; show matches grouped by tab.
-    const tabNames = { emotion: "감정", psychology: "심리", relationships: "관계", memory: "기억", canon: "Canon", structure: "스토리 구조", difficulty: "난이도", world: "세계", clues: "단서/체인", health: "건강도", director: "Director", prompt: "프롬프트", performance: "성능" };
+    const tabNames = { emotion: "감정", psychology: "심리", relationships: "관계", memory: "기억", canon: "Canon", structure: "스토리 구조", difficulty: "난이도", world: "세계", clues: "단서/체인", health: "건강도", director: "Director", prompt: "프롬프트", registry: "Registry", feedback: "피드백", performance: "성능" };
     let html = "";
     for (const t of Object.keys(tabNames)) {
       const hits = buildRows(t, ADV.data).filter((r) => (r.label + " " + r.text).toLowerCase().includes(q));

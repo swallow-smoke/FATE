@@ -258,6 +258,10 @@ const EMPTY_EXTRACTION = () => ({
   new_memories: [], canon_updates: [], flag_changes: [], item_gains: [], item_uses: [],
   identity_shift: null, new_dynamic_trait_candidate: null, integrity_issues: [], proper_nouns: [],
   relationship_changes: [], // PATCH 관계 전환
+  arc_changes: null, motif_hints: [], // PATCH_NARRATIVE_ACCUMULATION_GAPS
+  chapter_changes: null, // PATCH_CHAPTER_CHECKLIST
+  npc_arc_changes: null, // PATCH_WEBNOVEL_TECHNIQUES
+  soft_goal_progress: [], // PATCH_IP_EXTENSIONS_PROJECT_MIO
 });
 function normalizeExtraction(parsed) {
   const e = EMPTY_EXTRACTION();
@@ -273,6 +277,11 @@ function normalizeExtraction(parsed) {
     integrity_issues: parsed.integrity_issues || [], // Phase 14 W1
     proper_nouns: parsed.proper_nouns || [],         // Phase 14 W2
     relationship_changes: parsed.relationship_changes || [], // PATCH 관계 전환
+    arc_changes: parsed.arc_changes || null,         // PATCH_NARRATIVE_ACCUMULATION_GAPS
+    motif_hints: parsed.motif_hints || [],           // PATCH_NARRATIVE_ACCUMULATION_GAPS
+    chapter_changes: parsed.chapter_changes || null, // PATCH_CHAPTER_CHECKLIST
+    npc_arc_changes: parsed.npc_arc_changes || null, // PATCH_WEBNOVEL_TECHNIQUES
+    soft_goal_progress: parsed.soft_goal_progress || [], // PATCH_IP_EXTENSIONS_PROJECT_MIO
   };
 }
 function parseExtraction(raw) {
@@ -348,13 +357,13 @@ function tryNote(raw) {
 
 // --- structured generation (Phase 4 A4 — wizard world/character JSON) -----
 // Completely separate from SYSTEM_PROMPT_BASE: JSON mode, low temperature.
-async function generateStructured(systemPrompt, userText, { temperature = 0.5, maxOutputTokens = 4096 } = {}) {
+async function generateStructured(systemPrompt, userText, { temperature = 0.5, maxOutputTokens = 4096, kind = "structured_gen" } = {}) {
   if (!hasKey()) return null; // caller falls back to its own mock
   const raw = await callGemini(EXTRACT_MODEL, systemPrompt, userText, {
     temperature,
     maxOutputTokens,
     responseMimeType: "application/json",
-  }, "structured_gen");
+  }, kind);
   let text = raw;
   const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (fence) text = fence[1].trim();

@@ -15,11 +15,24 @@ const GENRE_PRESETS = [
 ];
 
 const REL_TYPES = ["안 정해짐", "친구", "낯선 사람", "라이벌", "가족", "스승"];
+const EXTRA_ITEM_TYPES = [
+  "Organization", "Item", "Property", "FamilyRelation", "Promise",
+  "CalendarEvent", "WantedRecord", "RegionReputation", "HouseRule",
+  "NarrativeArc", "Motif", "HiddenVariable", "Other",
+];
+const START_PRESETS = [
+  { id: "arrival", name: "낯선 곳에 막 도착했다", desc: "새 장소, 첫 만남, 작은 불편함으로 시작" },
+  { id: "letter", name: "오래된 편지를 받았다", desc: "과거의 인물이나 약속이 현재를 두드림" },
+  { id: "rainy_reunion", name: "비 오는 날 재회했다", desc: "관계 중심, 말하지 못한 감정으로 시작" },
+  { id: "missing", name: "누군가 사라졌다", desc: "조사와 소문, 불안한 일상으로 시작" },
+  { id: "quiet_day", name: "평온한 하루에서 시작한다", desc: "일상, 대화, 작은 선택부터 천천히" },
+];
 
 // Form-first: wiz holds a fully-editable model from the very first render.
 function blankWorld() { return { world_name: "", tone: "", background_description: "", regions: [], factions: [], notes: "" }; }
 function blankPlayer() { return { birth_name: "", background: "", core_values: [], psychology: { core_fear: "", desire: "", trauma: "" }, notes: "" }; }
 function blankChars() { return { player: blankPlayer(), npcs: [] }; }
+function blankExtraItems() { return []; }
 function blankNpc() {
   return {
     canon_id: "char_" + Date.now().toString(36) + Math.floor(Math.random() * 900 + 100),
@@ -30,12 +43,52 @@ function blankNpc() {
   };
 }
 
-const wiz = { step: 1, world: blankWorld(), chars: blankChars(), freeWorld: "", preset: null, length: "normal" };
+const wiz = { step: 1, world: blankWorld(), chars: blankChars(), extraItems: blankExtraItems(), freeWorld: "", preset: null, length: "normal", startPreset: "arrival" };
+
+function worldDraftStats() {
+  const text = [wiz.world.background_description, wiz.world.notes, wiz.freeWorld].filter(Boolean).join("\n\n");
+  return {
+    chars: text.length,
+    lines: text ? text.split(/\r\n|\r|\n/).length : 0,
+    regions: (wiz.world.regions || []).length,
+    factions: (wiz.world.factions || []).length,
+    imports: (wiz.extraItems || []).length,
+  };
+}
+
+function renderWorldDraftStats() {
+  const s = worldDraftStats();
+  return `
+    <div class="world-draft-stats" aria-label="world draft stats">
+      <span><b>${s.chars.toLocaleString()}</b><small>chars</small></span>
+      <span><b>${s.lines.toLocaleString()}</b><small>lines</small></span>
+      <span><b>${s.regions}</b><small>places</small></span>
+      <span><b>${s.factions}</b><small>factions</small></span>
+      <span><b>${s.imports}</b><small>imports</small></span>
+    </div>`;
+}
+
+function wizardDocRail(kind) {
+  const items = kind === "characters"
+    ? [["주인공", "wzPName"], ["배경", "wzPBg"], ["심리", "wzPFear"], ["NPC", "wzNpcs"]]
+    : [["장르", "preset-row"], ["세계 이름", "wzWorldName"], ["본문 설정", "wzBackground"], ["지역", "wzRegions"], ["세력", "wzFactions"], ["세부 설정", "wzExtraItems"]];
+  return `<aside class="wizard-doc-rail">
+    <div class="wizard-doc-title">${kind === "characters" ? "Character Bible" : "World Bible"}</div>
+    ${items.map(([label, id]) => `<button type="button" data-jump="${id}">${label}</button>`).join("")}
+  </aside>`;
+}
+
+function bindWizardDocRail() {
+  document.querySelectorAll(".wizard-doc-rail [data-jump]").forEach((b) => b.addEventListener("click", () => {
+    const target = $(b.dataset.jump) || document.querySelector("." + b.dataset.jump);
+    if (target) target.scrollIntoView({ behavior: "smooth", block: "center" });
+  }));
+}
 
 // --- draft autosave (Phase 7 Part B) ---------------------------------------
 const DRAFT_KEY = "nos_wizard_draft";
 function saveDraft() {
-  try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ step: wiz.step, world: wiz.world, chars: wiz.chars, freeWorld: wiz.freeWorld, preset: wiz.preset, length: wiz.length, at: Date.now() })); } catch (e) {}
+  try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ step: wiz.step, world: wiz.world, chars: wiz.chars, extraItems: wiz.extraItems, freeWorld: wiz.freeWorld, preset: wiz.preset, length: wiz.length, startPreset: wiz.startPreset, at: Date.now() })); } catch (e) {}
 }
 function clearDraft() { try { localStorage.removeItem(DRAFT_KEY); } catch (e) {} }
 function loadDraft() { try { return JSON.parse(localStorage.getItem(DRAFT_KEY) || "null"); } catch (e) { return null; } }
@@ -118,13 +171,62 @@ function renderWizStep1() {
       <div class="wz-field"><label>정해진 칸에 안 맞는 이야기를 자유롭게</label>
         <textarea id="wzWorldNotes" rows="3" placeholder="구조화하지 않고 그대로 저장됩니다. GM이 관련 시점에 참고합니다.">${escapeHtml(w.notes || "")}</textarea></div>
 
+      <div class="section-h">세부 커스터마이징 <small>세계관 시작 전에 전부 수정</small></div>
+      <p class="muted">MIO처럼 설정이 많은 문서는 여기서 조직, 아이템, 집, 가족관계, 약속, 일정, 수배, 평판, 하우스 룰, 아크, 모티프, 숨은 변수까지 직접 만들고 수정할 수 있습니다.</p>
+      <div class="file-draft-tools">
+        <select id="wzExtraType">
+          ${EXTRA_ITEM_TYPES.map((t) => `<option value="${t}">${t}</option>`).join("")}
+        </select>
+        <button type="button" id="wzAddExtra">+ 세부 설정 추가</button>
+      </div>
+      <div id="wzExtraItems">${renderExtraItemsEditor()}</div>
+
       <div class="modal-actions">
         <button type="button" id="wzQuickStart" title="선택한(없으면 첫) 프리셋의 기본 세계로 곧장 시작 — AI 없이">⚡ 빠른 시작</button>
         <button type="button" id="wzFromTemplate">📚 기존 세계관 템플릿</button>
+        <button type="button" id="wzNotionImport" title="Notion 페이지 링크에서 세계관/캐릭터를 가져옵니다">📥 Notion에서 가져오기</button>
+        <button type="button" id="wzFileImport" title=".md/.txt 파일을 올리면 AI가 분석해 세계관/캐릭터로 등록합니다">📄 파일에서 가져오기</button>
         <button type="button" id="wzToStep2" class="primary">다음 단계 →</button>
       </div>
       <div id="wzWorldResult"></div>
     </div>`;
+
+  const card = document.querySelector("#wizardBody .wiz-card");
+  if (card) {
+    card.classList.add("wiz-card-wide", "world-builder-card", "wizard-doc-card");
+    card.insertAdjacentHTML("afterbegin", wizardDocRail("world"));
+    card.insertAdjacentHTML("afterbegin", `
+      <section class="world-builder-hero">
+        <div>
+          <span class="eyebrow">World Bible</span>
+          <h2>책 쓰듯이 세계관 만들기</h2>
+          <p class="muted">큰 설정은 긴 문서처럼 쓰고, 아래의 세부 칸은 그대로 유지합니다. 지역, 세력, 아이템, 규칙까지 빠뜨리지 않고 정리할 수 있습니다.</p>
+          <div class="world-builder-actions">
+            <button type="button" id="wzTopFileImport" class="primary">파일 가져오기</button>
+            <button type="button" id="wzTopNotionImport">Notion 가져오기</button>
+            <button type="button" id="wzTopTemplate">템플릿</button>
+          </div>
+        </div>
+        <div id="wzWorldStats">${renderWorldDraftStats()}</div>
+      </section>`);
+  }
+  if ($("wzBackground")) $("wzBackground").rows = Math.max(Number($("wzBackground").rows || 0), 14);
+  if ($("wzWorldNotes")) $("wzWorldNotes").rows = Math.max(Number($("wzWorldNotes").rows || 0), 8);
+  const refreshWorldStats = () => {
+    if ($("wzBackground")) wiz.world.background_description = $("wzBackground").value;
+    if ($("wzWorldNotes")) wiz.world.notes = $("wzWorldNotes").value;
+    if ($("wzWorldStats")) $("wzWorldStats").innerHTML = renderWorldDraftStats();
+  };
+  ["wzBackground", "wzWorldNotes"].forEach((id) => { if ($(id)) $(id).addEventListener("input", refreshWorldStats); });
+  if ($("wzTopFileImport")) $("wzTopFileImport").addEventListener("click", () => {
+    readStep1();
+    openFileImport({ fillOnly: true, onItems: applyImportItemsToWizard });
+  });
+  if ($("wzTopNotionImport")) $("wzTopNotionImport").addEventListener("click", () => {
+    readStep1();
+    openNotionImport({ fillOnly: true, onItems: applyImportItemsToWizard });
+  });
+  if ($("wzTopTemplate")) $("wzTopTemplate").addEventListener("click", openTemplatePicker);
 
   // preset click: fills tone/background hint + DNA (no AI).
   document.querySelectorAll(".preset-card").forEach((b) =>
@@ -142,6 +244,13 @@ function renderWizStep1() {
   $("wzAddFaction").addEventListener("click", () => { readStep1(); wiz.world.factions.push({ canon_id: "faction_" + Date.now().toString(36), name: "", description: "", goal: "", key_people: "", faction_relations: "", influence: "", founding_principle: "" }); renderWizStep1(); });
   document.querySelectorAll('#wzRegions .wz-del, #wzFactions .wz-del').forEach((b) =>
     b.addEventListener("click", () => { readStep1(); (b.dataset.kind === "region" ? wiz.world.regions : wiz.world.factions).splice(Number(b.dataset.i), 1); renderWizStep1(); }));
+  $("wzAddExtra").addEventListener("click", () => {
+    readStep1();
+    const type = $("wzExtraType").value || "Other";
+    wiz.extraItems.push(newExtraItem(type));
+    renderWizStep1();
+  });
+  bindExtraItemsControls(renderWizStep1);
 
   // per-field AI 도움
   bindAiButtons(() => readStep1(), (field, btn) => {
@@ -152,7 +261,16 @@ function renderWizStep1() {
 
   $("wzQuickStart").addEventListener("click", quickStart);
   $("wzFromTemplate").addEventListener("click", openTemplatePicker);
+  $("wzNotionImport").addEventListener("click", () => {
+    readStep1();
+    openNotionImport({ fillOnly: true, onItems: applyImportItemsToWizard });
+  });
+  $("wzFileImport").addEventListener("click", () => {
+    readStep1();
+    openFileImport({ fillOnly: true, onItems: applyImportItemsToWizard });
+  });
   $("wzToStep2").addEventListener("click", () => { readStep1(); setWizStep(2); });
+  bindWizardDocRail();
 }
 
 function readStep1() {
@@ -161,6 +279,7 @@ function readStep1() {
   if ($("wzTone")) w.tone = $("wzTone").value;
   if ($("wzBackground")) w.background_description = $("wzBackground").value;
   if ($("wzWorldNotes")) w.notes = $("wzWorldNotes").value;
+  readExtraItemsFromStep3();
   document.querySelectorAll("#wzRegions .rg").forEach((inp) => {
     const r = w.regions[Number(inp.dataset.i)]; if (!r) return;
     if (inp.dataset.k === "notable_features") r.notable_features = inp.value.split(";").map((s) => s.trim()).filter(Boolean);
@@ -206,7 +325,7 @@ function renderWizStep2() {
 
       <div class="section-h">플레이어 캐릭터</div>
       <div class="wz-field"><label>이름</label><input id="wzPName" value="${escapeHtml(p.birth_name || "")}" placeholder="이름" /></div>
-      <div class="wz-field"><label>배경 ${aiBtn("player_background")}</label><input id="wzPBg" value="${escapeHtml(p.background || "")}" placeholder="예: 과거를 숨긴 전직 용병" /></div>
+      <div class="wz-field"><label>배경 ${aiBtn("player_background")}</label><textarea id="wzPBg" rows="8" placeholder="태어난 곳, 잃어버린 것, 지금 숨기는 것, 이 세계와 맺은 약속을 소설 설정처럼 길게 써도 됩니다.">${escapeHtml(p.background || "")}</textarea></div>
       <div class="wz-field"><label>가치관 <small>(쉼표 구분)</small> ${aiBtn("player_core_values")}</label><input id="wzPValues" value="${escapeHtml((p.core_values || []).join(", "))}" placeholder="예: 생존, 의리" /></div>
       <div class="wz-grid2">
         <div class="wz-field"><label>두려움 ${aiBtn("player_fear")}</label><input id="wzPFear" value="${escapeHtml((p.psychology || {}).core_fear || "")}" /></div>
@@ -222,6 +341,25 @@ function renderWizStep2() {
       <div class="modal-actions"><button type="button" onclick="setWizStep(1)">← 이전</button><button type="button" id="wzToStep3" class="primary">다음 단계 →</button></div>
     </div>`;
 
+  const card = document.querySelector("#wizardBody .wiz-card");
+  if (card) {
+    card.classList.add("wiz-card-wide", "wizard-doc-card", "character-builder-card");
+    card.insertAdjacentHTML("afterbegin", wizardDocRail("characters"));
+    card.insertAdjacentHTML("afterbegin", `
+      <section class="world-builder-hero">
+        <div>
+          <span class="eyebrow">Character Bible</span>
+          <h2>책 속 인물처럼 캐릭터 만들기</h2>
+          <p class="muted">주인공과 NPC를 노션 문서처럼 정리합니다. 기존의 가치관, 심리, 관계, 위치, 소속 세부 설정은 그대로 유지됩니다.</p>
+        </div>
+        <div class="world-draft-stats">
+          <span><b>${(c.npcs || []).length}</b><small>NPC</small></span>
+          <span><b>${p.birth_name ? 1 : 0}</b><small>hero</small></span>
+          <span><b>${(p.background || "").length.toLocaleString()}</b><small>chars</small></span>
+        </div>
+      </section>`);
+  }
+
   $("wzAddNpc").addEventListener("click", () => { readStep2(); wiz.chars.npcs.push(blankNpc()); renderWizStep2(); });
   document.querySelectorAll("#wzNpcs .wz-del").forEach((b) =>
     b.addEventListener("click", () => { readStep2(); wiz.chars.npcs.splice(Number(b.dataset.i), 1); renderWizStep2(); }));
@@ -235,6 +373,7 @@ function renderWizStep2() {
   });
 
   $("wzToStep3").addEventListener("click", () => { readStep2(); setWizStep(3); });
+  bindWizardDocRail();
 }
 
 function npcCardHtml(n, i) {
@@ -248,7 +387,7 @@ function npcCardHtml(n, i) {
     <div class="wz-entity" data-kind="npc" data-i="${i}">
       <div class="wz-entity-head"><b>NPC ${i + 1}</b> <span>${aiBtn("npc", `data-i="${i}"`)}<button type="button" class="wz-del" data-i="${i}">✕ 삭제</button></span></div>
       <div class="wz-field"><label>이름</label><input class="np" data-i="${i}" data-k="birth_name" value="${escapeHtml(n.birth_name || "")}" placeholder="이름" /></div>
-      <div class="wz-field"><label>배경</label><input class="np" data-i="${i}" data-k="background" value="${escapeHtml(n.background || "")}" placeholder="한 줄 배경" /></div>
+      <div class="wz-field"><label>배경</label><textarea class="np" data-i="${i}" data-k="background" rows="5" placeholder="이 인물이 원하는 것, 감추는 것, 주인공과 부딪힐 이유를 문서처럼 적어두세요.">${escapeHtml(n.background || "")}</textarea></div>
       <div class="wz-grid2">
         <div class="wz-field"><label>가치관 <small>(쉼표)</small></label><input class="np" data-i="${i}" data-k="core_values" value="${escapeHtml((n.core_values || []).join(", "))}" /></div>
         <div class="wz-field"><label>현재 목표</label><input class="np" data-i="${i}" data-k="goal_current" value="${escapeHtml(n.goal_current || "")}" /></div>
@@ -345,12 +484,15 @@ function renderWizStep3() {
       <input type="range" min="1" max="5" step="1" value="${dna[k] || 3}" data-dna="${k}" />
       <span class="dna-val">${dna[k] || 3}</span></div>`).join("");
   const npcSummary = (c.npcs || []).map((n) => `${escapeHtml(n.birth_name || "(이름 미정)")}${n.no_player_connection ? " · 연결없음" : " · " + escapeHtml(n.relationship_to_player_type || "안 정해짐")}`).join(", ") || "없음";
+  const extraSummary = summarizeExtraItems(wiz.extraItems || []);
+  const extraEditor = renderExtraItemsEditor();
   $("wizardBody").innerHTML = `
     <div class="wiz-card">
       <h2>${escapeHtml(w.world_name || "이름 없는 세계")}</h2>
       <p class="muted">${escapeHtml(w.tone || "")} · 지역 ${(w.regions || []).length} · 세력 ${(w.factions || []).length}</p>
       <p><b>${escapeHtml((c.player && c.player.birth_name) || "플레이어")}</b>${c.player && c.player.background ? ` — ${escapeHtml(c.player.background)}` : ""}</p>
       <p class="muted">NPC: ${npcSummary}</p>
+      <p class="muted">세부 커스터마이징: ${escapeHtml(extraSummary || "없음")}</p>
       <div class="section-h">예상 캠페인 길이</div>
       <div class="modal-row"><label>페이싱 기준</label>
         <select id="wzLength">
@@ -358,13 +500,36 @@ function renderWizStep3() {
           <option value="normal" ${wiz.length === "normal" ? "selected" : ""}>보통 (약 180턴)</option>
           <option value="long" ${wiz.length === "long" ? "selected" : ""}>길게 (약 320턴)</option>
         </select></div>
+      <div class="section-h">시작 시나리오</div>
+      <div class="modal-row"><label>첫 장면 훅</label>
+        <select id="wzStartPreset">
+          ${START_PRESETS.map((p) => `<option value="${p.id}" ${wiz.startPreset === p.id ? "selected" : ""}>${p.name} — ${p.desc}</option>`).join("")}
+        </select></div>
+      <div class="section-h">콘텐츠 수위 확인</div>
+      <p class="muted">폭력/공포/로맨스/감정 묘사는 설정 탭에서 언제든 문장으로 조정할 수 있습니다. 기본은 과장하지 않는 보통 수위입니다.</p>
       <div class="section-h">Narrative DNA</div>${sliders}
+      <div class="section-h">세부 커스터마이징 <small>조직·아이템·집·약속·일정·수배·평판·규칙·변수</small></div>
+      ${extraEditor}
       <div class="modal-actions">
         <button type="button" onclick="setWizStep(2)">← 이전</button>
         <button type="button" id="wzCreate" class="primary">캠페인 시작</button></div>
       <div id="wzCreateStatus"></div>
     </div>`;
+  const reviewCard = document.querySelector("#wizardBody .wiz-card");
+  if (reviewCard) {
+    reviewCard.classList.add("wiz-card-wide");
+    reviewCard.insertAdjacentHTML("afterbegin", `
+      <section class="world-review-strip">
+        <div>
+          <span class="eyebrow">Review</span>
+          <b>World source size</b>
+        </div>
+        ${renderWorldDraftStats()}
+      </section>`);
+  }
   $("wzLength").addEventListener("change", (e) => { wiz.length = e.target.value; saveDraft(); });
+  $("wzStartPreset").addEventListener("change", (e) => { wiz.startPreset = e.target.value; saveDraft(); });
+  bindExtraItemsControls(renderWizStep3);
   document.querySelectorAll('input[type="range"][data-dna]').forEach((r) =>
     r.addEventListener("input", () => { r.nextElementSibling.textContent = r.value; }));
   $("wzCreate").addEventListener("click", async () => {
@@ -372,6 +537,7 @@ function renderWizStep3() {
     document.querySelectorAll("[data-dna]").forEach((r) => (dnaOut[r.dataset.dna] = Number(r.value)));
     $("wzCreateStatus").innerHTML = `<div class="muted">세계를 등록하는 중… (Kernel 검증 경유)</div>`;
     try {
+      readExtraItemsFromStep3();
       const era = (GENRE_PRESETS.find((x) => x.id === wiz.preset) || {}).id || "fantasy";
       const d = await apiPost("/api/wizard/create", {
         campaign_id: "camp_" + Date.now().toString(36),
@@ -385,13 +551,118 @@ function renderWizStep3() {
         npcs: c.npcs, // C3 — each carries relationship_to_player_type + no_player_connection
         narrative_dna: dnaOut,
         expected_campaign_length: wiz.length,
+        scenario_preset: wiz.startPreset,
+        import_items: wiz.extraItems || [],
       });
       if (d.failed && d.failed.length) console.warn("canon.register rejects:", d.failed);
       clearDraft();
-      wiz.world = blankWorld(); wiz.chars = blankChars(); wiz.step = 1; wiz.preset = null;
+      wiz.world = blankWorld(); wiz.chars = blankChars(); wiz.extraItems = blankExtraItems(); wiz.step = 1; wiz.preset = null;
       location.hash = "#/c/" + d.campaign_id;
-    } catch (e) { $("wzCreateStatus").innerHTML = `<div class="muted">생성 실패: ${escapeHtml(e.message)}</div>`; }
+    } catch (e) { $("wzCreateStatus").innerHTML = renderWizardCreateError(e); }
   });
+}
+
+function renderWizardCreateError(e) {
+  const data = e && e.data;
+  if (data && data.error === "content_guardrail") {
+    const problems = Array.isArray(data.problems) ? data.problems : [];
+    const rows = problems.length
+      ? problems.map((p) => `<li>${escapeHtml(p)}</li>`).join("")
+      : "<li>미성년 설정과 로맨스 관계가 함께 감지되었습니다.</li>";
+    return `<div class="content-card error-card">
+      <h3>생성 전에 수정이 필요합니다</h3>
+      <p class="muted">안전 규칙상 미성년/아동/중학생/10대 초반 설정은 로맨스·연인·연애·결혼 관계와 함께 시작할 수 없습니다.</p>
+      <ul>${rows}</ul>
+      <p class="muted">해결: 해당 인물의 나이를 성인으로 명확히 하거나, 관계/배경에서 로맨스 표현을 빼고 친구·동료·보호자 같은 관계로 바꿔주세요.</p>
+    </div>`;
+  }
+  return `<div class="muted">생성 실패: ${escapeHtml((e && e.message) || "알 수 없는 오류")}</div>`;
+}
+
+function renderExtraItemsEditor() {
+  const items = wiz.extraItems || [];
+  if (!items.length) return `<p class="muted">아직 세부 항목이 없습니다. MIO 문서나 md/txt를 가져오면 여기서 조직, 아이템, 집, 약속, 일정, 수배, 평판, 규칙, 변수까지 직접 고칠 수 있습니다.</p>`;
+  return `<div class="wz-extra-list">
+    ${items.map((it, i) => {
+      const title = extraItemTitle(it);
+      return `<div class="wz-entity wz-extra-item">
+        <div class="wz-entity-head">
+          <b>${escapeHtml(title)}</b>
+          <span><span class="tag">${escapeHtml(it.type || "Other")}</span> <button type="button" class="wz-extra-remove" data-i="${i}">삭제</button></span>
+        </div>
+        <div class="wz-grid2">
+          <div class="wz-field"><label>타입</label><input class="wz-extra-type" data-i="${i}" value="${escapeHtml(it.type || "Other")}" /></div>
+          <div class="wz-field"><label>ID</label><input class="wz-extra-id" data-i="${i}" value="${escapeHtml(it.canon_id || "")}" /></div>
+        </div>
+        <div class="wz-field"><label>데이터 JSON</label><textarea class="wz-extra-json" data-i="${i}" rows="5" spellcheck="false">${escapeHtml(JSON.stringify(it.data || {}, null, 2))}</textarea></div>
+      </div>`;
+    }).join("")}
+  </div>`;
+}
+
+function bindExtraItemsControls(refreshFn) {
+  document.querySelectorAll(".wz-extra-remove").forEach((b) => b.addEventListener("click", () => {
+    readExtraItemsFromStep3();
+    wiz.extraItems.splice(Number(b.dataset.i), 1);
+    refreshFn();
+  }));
+}
+
+function newExtraItem(type) {
+  const idPrefix = {
+    Organization: "org_", Item: "item_", Property: "prop_", FamilyRelation: "fam_",
+    Promise: "promise_", CalendarEvent: "cal_", WantedRecord: "wanted_",
+    RegionReputation: "rep_", HouseRule: "rule_", NarrativeArc: "arc_",
+    Motif: "motif_", HiddenVariable: "var_", Other: "note_",
+  }[type] || "item_";
+  const data = {
+    Organization: { name: "", hq: "", ranks: [], rules: [], funds: 0, rivals: [], member: false },
+    Item: { name: "", description: "", tags: [], condition: "", owner: "" },
+    Property: { name: "", kind: "house", region: "", level: 1, contents: [], memories: [] },
+    FamilyRelation: { from: "", to: "", type: "sibling" },
+    Promise: { npc_ref: "", summary: "", due_day: null },
+    CalendarEvent: { title: "", kind: "event", day: null, note: "" },
+    WantedRecord: { scope_id: "", scope_label: "", level: 1, bounty: 0, reason: "" },
+    RegionReputation: { scope: "city", scope_id: "", name: "", standing: 0, reason: "" },
+    HouseRule: { text: "" },
+    NarrativeArc: { title: "", summary: "", stage: "setup", beats: [] },
+    Motif: { label: "", description: "" },
+    HiddenVariable: { label: "", description: "", default_value: 0.5, high_directive: "", low_directive: "" },
+    Other: { note: "" },
+  }[type] || { note: "" };
+  return { type, canon_id: idPrefix + Date.now().toString(36), data };
+}
+
+function readExtraItemsFromStep3() {
+  if (!document.querySelector(".wz-extra-json")) return;
+  const next = [];
+  document.querySelectorAll(".wz-extra-json").forEach((ta) => {
+    const i = Number(ta.dataset.i);
+    const old = (wiz.extraItems || [])[i] || {};
+    let data = old.data || {};
+    try { data = JSON.parse(ta.value || "{}"); }
+    catch (e) { data = { note: ta.value || "" }; }
+    const typeEl = document.querySelector(`.wz-extra-type[data-i="${i}"]`);
+    const idEl = document.querySelector(`.wz-extra-id[data-i="${i}"]`);
+    next.push({
+      type: (typeEl && typeEl.value.trim()) || old.type || "Other",
+      canon_id: (idEl && idEl.value.trim()) || old.canon_id || "",
+      data,
+    });
+  });
+  wiz.extraItems = next;
+  saveDraft();
+}
+
+function summarizeExtraItems(items) {
+  const counts = {};
+  for (const it of items || []) counts[it.type || "Other"] = (counts[it.type || "Other"] || 0) + 1;
+  return Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(", ");
+}
+
+function extraItemTitle(it) {
+  const d = (it && it.data) || {};
+  return d.name || d.title || d.label || d.summary || d.text || d.note || it.canon_id || it.type || "세부 항목";
 }
 
 // --- anthology templates (Phase 8 B2) --------------------------------------
@@ -432,22 +703,194 @@ async function quickStart() {
       npcs: [], narrative_dna: { ...preset.dna },
     });
     clearDraft();
-    wiz.world = blankWorld(); wiz.chars = blankChars(); wiz.step = 1;
+    wiz.world = blankWorld(); wiz.chars = blankChars(); wiz.extraItems = blankExtraItems(); wiz.step = 1;
     location.hash = "#/c/" + d.campaign_id;
   } catch (e) {
     $("wzWorldResult").innerHTML = `<div class="muted">빠른 시작 실패: ${escapeHtml(e.message)}</div>`;
   }
 }
 
+// Import 분석 결과를 바로 등록하지 않고, 기존 세계관/캐릭터 생성 칸에 채운다.
+function applyImportItemsToWizard(items) {
+  const list = Array.isArray(items) ? items : [];
+  let worldCount = 0, factionCount = 0, playerFilled = false, npcCount = 0, noteCount = 0;
+  readStep1();
+  if ($("wzPName")) readStep2();
+
+  for (const it of list) {
+    const d = it.data || {};
+    if (it.type === "World") {
+      if (!wiz.world.world_name && d.world_name) wiz.world.world_name = d.world_name;
+      if (!wiz.world.world_name && worldCount === 0 && d.name) wiz.world.world_name = d.name;
+      if (d.description) wiz.world.background_description = appendText(wiz.world.background_description, d.description);
+      wiz.world.regions = wiz.world.regions || [];
+      if (d.name || d.description || d.terrain || d.climate) {
+        wiz.world.regions.push({
+          canon_id: cleanImportId(it.canon_id, "loc_", d.name),
+          name: d.name || it.page_title || "",
+          description: d.description || "",
+          terrain: d.terrain || "",
+          climate: d.climate || "",
+          security_level: d.security_level || "",
+          notable_features: arrayOf(d.notable_features),
+        });
+        worldCount++;
+      }
+    } else if (it.type === "Faction") {
+      wiz.world.factions = wiz.world.factions || [];
+      wiz.world.factions.push({
+        canon_id: cleanImportId(it.canon_id, "faction_", d.name),
+        name: d.name || it.page_title || "",
+        description: d.description || "",
+        founding_principle: d.founding_principle || "",
+        goal: d.goal || "",
+        leader: d.leader || "",
+        key_people: d.key_people || "",
+        faction_relations: d.faction_relations || "",
+        influence: d.influence || "",
+        stance: d.stance || "",
+      });
+      factionCount++;
+    } else if (it.type === "Character") {
+      const playerLike = isPlayerImportCandidate(d);
+      if ((playerLike || !wiz.chars.player.birth_name) && !playerFilled) {
+        fillWizardPlayer(d);
+        playerFilled = true;
+      } else {
+        wiz.chars.npcs = wiz.chars.npcs || [];
+        wiz.chars.npcs.push(importNpcToWizard(it, d));
+        npcCount++;
+      }
+    } else if (isExtraImportType(it.type)) {
+      wiz.extraItems = wiz.extraItems || [];
+      wiz.extraItems.push({
+        type: it.type || "Other",
+        canon_id: it.canon_id || cleanImportId("", "item_", extraItemTitle(it)),
+        data: d,
+      });
+      if (it.type === "Other") wiz.world.notes = appendText(wiz.world.notes, importItemNote(it));
+      noteCount++;
+    }
+  }
+
+  saveDraft();
+  setWizStep(1);
+  showBanner(`분석 결과를 생성 칸에 채웠습니다. 장소 ${worldCount}개, 세력 ${factionCount}개, 주인공 ${playerFilled ? 1 : 0}명, NPC ${npcCount}명${noteCount ? `, 세부 설정 ${noteCount}개` : ""}.`);
+}
+
+function fillWizardPlayer(d) {
+  const p = wiz.chars.player = { ...blankPlayer(), ...wiz.chars.player };
+  p.birth_name = d.birth_name || d.name || p.birth_name;
+  p.background = d.background || d.description || p.background;
+  p.core_values = arrayOf(d.core_values).length ? arrayOf(d.core_values) : p.core_values;
+  p.psychology = { ...(p.psychology || {}), ...(d.psychology || {}) };
+  if (d.goal_current) p.notes = appendText(p.notes, `목표: ${d.goal_current}`);
+  if (d.secrets) p.notes = appendText(p.notes, secretsNote(d.secrets));
+}
+
+function importNpcToWizard(it, d) {
+  return {
+    ...blankNpc(),
+    canon_id: cleanImportId(it.canon_id, "char_", d.birth_name || d.name),
+    birth_name: d.birth_name || d.name || it.page_title || "",
+    species: d.species || "human",
+    role: d.role || "npc",
+    background: d.background || d.description || "",
+    core_values: arrayOf(d.core_values),
+    goal_current: d.goal_current || "",
+    current_location: d.current_location || "",
+    affiliations: arrayOf(d.affiliations),
+    schedule_hint: d.schedule_hint || "",
+    psychology: { ...blankNpc().psychology, ...(d.psychology || {}) },
+    relationship_to_player_type: d.relationship_to_player_type || "안 정해짐",
+    no_player_connection: !d.relationship_to_player_type && !!d.no_player_connection,
+  };
+}
+
+function isExtraImportType(type) {
+  return [
+    "Organization", "Item", "Property", "FamilyRelation", "Promise",
+    "CalendarEvent", "WantedRecord", "RegionReputation", "HouseRule",
+    "NarrativeArc", "Motif", "HiddenVariable", "Other",
+  ].includes(type || "Other");
+}
+
+function isPlayerImportCandidate(d) {
+  const s = `${d.role || ""} ${d.birth_name || ""} ${d.name || ""} ${d.description || ""}`;
+  return /(player|protagonist|main character|주인공|플레이어|主人公)/i.test(s);
+}
+
+function cleanImportId(id, prefix, fallback) {
+  const raw = String(id || fallback || Date.now().toString(36)).normalize("NFC");
+  if (raw.startsWith(prefix)) return raw;
+  const safe = raw.toLowerCase().replace(/[^a-z0-9가-힣_-]+/g, "_").replace(/^_+|_+$/g, "");
+  return prefix + (safe || Date.now().toString(36));
+}
+
+function arrayOf(v) {
+  if (Array.isArray(v)) return v.map((x) => String(x || "").trim()).filter(Boolean);
+  if (!v) return [];
+  return String(v).split(/[,;\n]/).map((x) => x.trim()).filter(Boolean);
+}
+
+function appendText(base, add) {
+  const a = String(add || "").trim();
+  if (!a) return base || "";
+  const b = String(base || "").trim();
+  if (!b) return a;
+  if (b.includes(a)) return b;
+  return `${b}\n\n${a}`;
+}
+
+function secretsNote(secrets) {
+  if (!secrets || typeof secrets !== "object") return "";
+  return [
+    secrets.public ? `공개 정보: ${secrets.public}` : "",
+    secrets.hidden ? `숨긴 비밀: ${secrets.hidden}` : "",
+    secrets.locked ? `잠긴 비밀: ${secrets.locked}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+function importItemNote(it) {
+  const d = it.data || {};
+  const title = d.name || d.title || d.label || d.summary || d.text || d.note || it.page_title || it.type;
+  const desc = d.description || d.reason || d.note || "";
+  return `[${it.type}] ${title}${desc && desc !== title ? `: ${desc}` : ""}`;
+}
+
+// Notion 가져오기(위저드 경로): 현재 세계관 폼으로 캠페인을 만들고 그 id를 반환.
+// 가져온 항목은 이 캠페인의 Canon/Registry로 등록된다.
+async function notionWizEnsureCampaign() {
+  const w = wiz.world, c = wiz.chars;
+  const presetDna = w._presetDna || (GENRE_PRESETS.find((x) => x.id === wiz.preset) || {}).dna;
+  const era = (GENRE_PRESETS.find((x) => x.id === wiz.preset) || {}).id || "fantasy";
+  const d = await apiPost("/api/wizard/create", {
+    campaign_id: "camp_" + Date.now().toString(36),
+    world_name: w.world_name || "Notion 가져온 세계", era, genre_preset: wiz.preset,
+    background_description: w.background_description, world_notes: w.notes,
+    regions: w.regions, factions: w.factions,
+    player: c.player && c.player.birth_name ? {
+      birth_name: c.player.birth_name, species: "human", background: c.player.background,
+      core_values: c.player.core_values, psychology: c.player.psychology, notes: c.player.notes,
+    } : undefined,
+    npcs: c.npcs || [],
+    narrative_dna: presetDna || undefined,
+    expected_campaign_length: wiz.length,
+    scenario_preset: wiz.startPreset,
+  });
+  return d.campaign_id;
+}
+
 // draft resume
 function maybeResumeWizardDraft() {
   const d = loadDraft();
-  if (!d || (!(d.world && (d.world.world_name || (d.world.regions || []).length)) && !(d.chars && (d.chars.npcs || []).length) && !d.freeWorld)) return false;
+  if (!d || (!(d.world && (d.world.world_name || (d.world.regions || []).length)) && !(d.chars && (d.chars.npcs || []).length) && !(d.extraItems || []).length && !d.freeWorld)) return false;
   const when = d.at ? new Date(d.at).toLocaleString() : "";
-  if (!confirm(`작성하던 세계가 있습니다${when ? ` (${when})` : ""}. 이어서 작성할까요?\n(취소하면 새로 시작합니다.)`)) { clearDraft(); wiz.world = blankWorld(); wiz.chars = blankChars(); wiz.step = 1; wiz.preset = null; return false; }
+  if (!confirm(`작성하던 세계가 있습니다${when ? ` (${when})` : ""}. 이어서 작성할까요?\n(취소하면 새로 시작합니다.)`)) { clearDraft(); wiz.world = blankWorld(); wiz.chars = blankChars(); wiz.extraItems = blankExtraItems(); wiz.step = 1; wiz.preset = null; return false; }
   wiz.world = { ...blankWorld(), ...(d.world || {}) };
   wiz.chars = { ...blankChars(), ...(d.chars || {}) };
-  wiz.freeWorld = d.freeWorld || ""; wiz.preset = d.preset || null; wiz.length = d.length || "normal";
+  wiz.extraItems = Array.isArray(d.extraItems) ? d.extraItems : blankExtraItems();
+  wiz.freeWorld = d.freeWorld || ""; wiz.preset = d.preset || null; wiz.length = d.length || "normal"; wiz.startPreset = d.startPreset || "arrival";
   setWizStep(d.step || 1);
   return true;
 }

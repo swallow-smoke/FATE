@@ -11,16 +11,22 @@ const { DATA_DIR } = require("../state/campaignState");
 
 const SUPPORTED_TYPES = ["Character", "World", "Faction", "Quest", "Rumor", "Item"];
 
+// PATCH_IP_EXTENSIONS_PROJECT_MIO · Canon Level — protection tier of a fact.
+const CANON_LEVELS = ["core", "campaign", "speculative"];
+
 // Sensible default field partitions per type. A register call may override
 // immutable_fields / mutable_fields explicitly.
 const DEFAULT_FIELDS = {
   Character: {
     immutable_fields: ["birth_name", "species", "core_values"],
-    mutable_fields: ["current_location", "current_status", "relationship_summary", "affiliations", "psychology", "goal_current", "schedule_hint"],
+    // Phase 16+ — kin (Family Tree) and secrets (NPC Secret, 3-tier) live here.
+    mutable_fields: ["current_location", "current_status", "relationship_summary", "affiliations", "psychology", "goal_current", "schedule_hint", "kin", "secrets", "player_nickname", "goal_state"],
   },
   World: {
     immutable_fields: ["region", "terrain"],
-    mutable_fields: ["climate", "notable_features", "controlling_faction"],
+    // Phase 16 · Living Places — place_kind/condition/place_stage/place_trend/
+    // place_history/last_place_tick_turn track how a place changes over time.
+    mutable_fields: ["climate", "notable_features", "controlling_faction", "place_kind", "condition", "place_stage", "place_trend", "place_history", "last_place_tick_turn"],
   },
   Faction: {
     immutable_fields: ["founding_principle"],
@@ -65,7 +71,7 @@ function createCanonDatabase(campaignId) {
   }
 
   // --- canon.register (CanonDatabase §5) ---------------------------------
-  function register({ canon_id, type, data, immutable_fields, mutable_fields }, turn) {
+  function register({ canon_id, type, data, immutable_fields, mutable_fields, canon_level }, turn) {
     if (!SUPPORTED_TYPES.includes(type)) {
       return { ok: false, reason: `Unsupported canon type "${type}" (MVP: ${SUPPORTED_TYPES.join(", ")})` };
     }
@@ -97,6 +103,10 @@ function createCanonDatabase(campaignId) {
       immutable_fields: immutable_fields || defaults.immutable_fields,
       mutable_fields: mutable_fields || defaults.mutable_fields,
       data: data || {},
+      // PATCH_IP_EXTENSIONS_PROJECT_MIO · Canon Level — how locked this fact is.
+      // "core" = IP-bible canon (heavily protected), "campaign" = emergent play
+      // canon (default, freely mutable), "speculative" = tentative / unconfirmed.
+      canon_level: CANON_LEVELS.includes(canon_level) ? canon_level : "campaign",
       registered_at_turn: turn,
       last_updated_turn: turn,
       source: "kernel_approved",
@@ -151,7 +161,22 @@ function createCanonDatabase(campaignId) {
     return changed;
   }
 
-  return { get, all, register, update, relevantTo, markDiscovered, persist, filePath, SUPPORTED_TYPES };
+  // PATCH_IP_EXTENSIONS_PROJECT_MIO · Canon Level setter. Promoting a fact to
+  // "core" makes the Watchdog treat contradictions against it as high-severity.
+  function setLevel(canon_id, level) {
+    const e = get(canon_id);
+    if (!e) return { ok: false, reason: `canon_id "${canon_id}" not found` };
+    if (!CANON_LEVELS.includes(level)) return { ok: false, reason: `unknown canon_level "${level}"` };
+    e.canon_level = level;
+    persist();
+    return { ok: true, entity: e };
+  }
+  function levelOf(canon_id) {
+    const e = get(canon_id);
+    return e ? (e.canon_level || "campaign") : null;
+  }
+
+  return { get, all, register, update, relevantTo, markDiscovered, persist, filePath, setLevel, levelOf, SUPPORTED_TYPES, CANON_LEVELS };
 }
 
-module.exports = { createCanonDatabase, SUPPORTED_TYPES, DEFAULT_FIELDS };
+module.exports = { createCanonDatabase, SUPPORTED_TYPES, DEFAULT_FIELDS, CANON_LEVELS };

@@ -25,7 +25,13 @@ const NUM_KEYS = { "--radius-base": { min: 0, max: 24, unit: "px" } };
 const ALLOWED_KEYS = new Set([...COLOR_KEYS, ...FONT_KEYS, ...Object.keys(NUM_KEYS)]);
 
 // 2. registered fonts (values may only reference these families).
-const ALLOWED_FONTS = ["Noto Serif KR", "Pretendard", "Noto Sans KR", "serif", "sans-serif", "monospace", "system-ui"];
+const ALLOWED_FONTS = [
+  "Pretendard", "Noto Sans KR", "Nanum Gothic", "IBM Plex Sans KR", "Gowun Dodum",
+  "Hahmlet", "Noto Serif KR", "Nanum Myeongjo", "Gowun Batang", "Song Myung",
+  "Do Hyeon", "Jua", "Black Han Sans", "Orbit", "Nanum Pen Script",
+  "East Sea Dokdo", "Yeon Sung", "Single Day", "Poor Story",
+  "serif", "sans-serif", "monospace", "system-ui",
+];
 
 // 3. anything matching this is an external-resource / script vector → reject.
 const DANGEROUS = /(url\s*\(|@import|javascript:|expression\s*\(|<|>|;|\}|\{)/i;

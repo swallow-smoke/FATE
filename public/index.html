@@ -9,7 +9,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@400;500;600&display=swap" />
-  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Do+Hyeon&family=East+Sea+Dokdo&family=Gowun+Batang:wght@400;700&family=Gowun+Dodum&family=Hahmlet:wght@400;500;600;700&family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=Jua&family=Nanum+Gothic:wght@400;700;800&family=Nanum+Myeongjo:wght@400;700;800&family=Nanum+Pen+Script&family=Noto+Sans+KR:wght@400;500;700&family=Orbit&family=Poor+Story&family=Single+Day&family=Song+Myung&family=Yeon+Sung&display=swap" />
+  <link rel="stylesheet" href="/style.css?v=customhub1" />
 </head>
 <body>
   <!-- API error banner (Phase 5 Wave 1) -->
@@ -82,6 +83,7 @@
       <!-- Phase 5 — player-facing top tab bar (6 tabs). Dev data NEVER here. -->
       <nav class="player-tabs" id="playerTabs">
         <button class="ptab active" data-ptab="story">이야기</button>
+        <button class="ptab" data-ptab="writer">집필실</button>
         <button class="ptab" data-ptab="character">캐릭터</button>
         <button class="ptab" data-ptab="world">세계</button>
         <button class="ptab" data-ptab="relations">관계</button>
@@ -92,6 +94,7 @@
         <span id="autosaveTag" class="autosave-tag hidden">✓ 저장됨</span>
         <button id="notifBtn" title="알림 (메시지 · 세계 소식)">🔔<span id="notifBadge" class="notif-badge hidden">0</span></button>
         <button id="commBtn" title="통신 (메시지 · 편지)">💬</button>
+        <button id="layoutToggle" class="layout-toggle" title="Desktop / Mobile UI 전환">Desktop</button>
         <button id="advancedBtn" class="hidden" title="Advanced 패널 (모든 내부 변수 · 읽기 전용)">Advanced</button>
         <label class="dbg"><input type="checkbox" id="debug" /> 디버그</label>
         <button id="devToggle" title="개발자 패널 (플레이어 정보와 완전 분리)">⚙</button>
@@ -103,12 +106,15 @@
       <section class="ppage active" id="ppage-story">
         <div id="chatpane">
           <div class="story-controls">
-            <button id="timeSkipBtn" title="시간 건너뛰기">⏩ 시간 스킵</button>
+            <button id="timeSkipBtn" title="시간 건너뛰기">⏩ 시간 흘리기</button>
             <button id="undoBtn" title="직전 턴 되돌리기" disabled>↩ 되돌리기</button>
             <button id="regenBtn" title="마지막 응답 다시 생성" disabled>🔄 다시 생성</button>
             <button id="branchBtn" title="현 시점에서 분기 세이브 생성">⑂ 분기 세이브</button>
-            <button id="forceEventBtn" title="다음 장면에 사건을 강하게 요청합니다">⚡ 사건 필요해</button>
+            <button id="deepTalkBtn" title="가까운 인물과 깊은 대화를 요청">♡ 깊은 대화</button>
+            <button id="dailyEventBtn" title="가벼운 일상 장면을 요청">☕ 일상</button>
+            <button id="forceEventBtn" title="다음 장면에 사건을 강하게 요청합니다">⚡ 파문 만들기</button>
             <button id="historyToggleBtn" title="대화 검색/필터">🔍 검색</button>
+            <button id="feedbackBtn" title="현재 턴 스냅샷을 피드백으로 저장">⚑ 이상해요</button>
             <button id="readModeBtn" title="읽기 모드 (소설처럼)">📖 읽기 모드</button>
             <button id="funBtn" title="동전던지기 / 운세뽑기 (기록에 영향 없음)">🎲 재미</button>
           </div>
@@ -126,21 +132,29 @@
 
           <main id="log" aria-live="polite"></main>
           <button id="scrollBottomBtn" class="scroll-bottom-btn hidden" title="맨 아래로">↓</button>
-          <div id="choices" class="choices hidden"></div>
           <div id="mentionHint" class="mention-hint hidden"></div>
           <div id="slashHint" class="slash-hint hidden"></div>
           <form id="composer">
-            <textarea id="input" rows="1" autocomplete="off" placeholder="행동을 입력하세요… (Enter 전송 · Shift+Enter 줄바꿈 · / 명령어)"></textarea>
+            <textarea id="input" rows="1" autocomplete="off" placeholder="다음에 할 행동, 말, 생각을 이어 적으세요… (Enter 이어가기 · Shift+Enter 줄바꿈)"></textarea>
             <button type="button" id="cancelSend" class="hidden" title="전송 취소">✕</button>
-            <button type="submit" id="send">보내기</button>
+            <button type="submit" id="send">이어가기</button>
           </form>
+          <div id="choices" class="choices hidden"></div>
         </div>
       </section>
 
+      <section class="ppage" id="ppage-writer"><div class="page-scroll" id="writerBody"></div></section>
       <section class="ppage" id="ppage-character"><div class="page-scroll" id="characterBody"></div></section>
       <section class="ppage" id="ppage-world">
         <nav class="subtabs" id="worldSubtabs">
           <button class="stab active" data-stab="timeline">연대기</button>
+          <button class="stab" data-stab="history">역사서</button>
+          <button class="stab" data-stab="news">뉴스</button>
+          <button class="stab" data-stab="places">장소</button>
+          <button class="stab" data-stab="calendar">일정</button>
+          <button class="stab" data-stab="property">거점</button>
+          <button class="stab" data-stab="inspector">Inspector</button>
+          <button class="stab" data-stab="dreams">꿈</button>
           <button class="stab" data-stab="foreshadow">복선</button>
           <button class="stab" data-stab="rumor">소문</button>
           <button class="stab" data-stab="reputation">세력 평판</button>
@@ -193,6 +207,8 @@
       <button class="atab" data-atab="health">캠페인 건강도</button>
       <button class="atab" data-atab="director">Director 로그</button>
       <button class="atab" data-atab="prompt">프롬프트</button>
+      <button class="atab" data-atab="registry">Registry</button>
+      <button class="atab" data-atab="feedback">피드백</button>
       <button class="atab" data-atab="performance">성능</button>
     </nav>
     <div id="advBody" class="adv-body"></div>
@@ -234,15 +250,17 @@
 
   <script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/gsap.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/SplitText.min.js"></script>
-  <script src="/js/util.js"></script>
+  <script src="/js/util.js?v=guardrailmsg1"></script>
   <script src="/js/dev.js"></script>
   <script src="/js/story.js"></script>
   <script src="/js/history.js"></script>
-  <script src="/js/tabs.js"></script>
+  <script src="/js/writer.js?v=writer2"></script>
+  <script src="/js/tabs.js?v=customhub1"></script>
   <script src="/js/advanced.js"></script>
   <script src="/js/launcher.js"></script>
-  <script src="/js/launcherSettings.js"></script>
-  <script src="/js/wizard.js"></script>
+  <script src="/js/launcherSettings.js?v=customhub1"></script>
+  <script src="/js/notionImport.js?v=phase16import2"></script>
+  <script src="/js/wizard.js?v=writerwizard2"></script>
   <script src="/js/notifications.js"></script>
   <script src="/js/main.js"></script>
 </body>

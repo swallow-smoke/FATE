@@ -10,6 +10,7 @@
 
 const { produceDirective, applyOutcome, catharsisReady } = require("./emotion/emotionEngine");
 const promptBlocks = require("./gemini/promptBlocks");
+const promptSettings = require("./gemini/promptSettings");
 const gemini = require("./gemini/geminiClient");
 const { EXTRACTION_SYSTEM_PROMPT, SYSTEM_PROMPT_BASE, CONTENT_INTENSITY_LINES, PROMPT_VERSION } = require("./gemini/systemPromptBase");
 const contextOptimizer = require("./gemini/contextOptimizer"); // Phase 13 V4/V5
@@ -45,6 +46,40 @@ const mystery = require("./mystery/mystery");
 const npcLifecycle = require("./canon/npcLifecycle");
 const letters = require("./comm/letters");
 const npcSocial = require("./npc/npcSocial");
+const livingPlaces = require("./world/livingPlaces"); // Phase 16 · Living Places
+const npcGoals = require("./npc/npcGoals"); // Phase 16 · NPC Goal System
+const worldNews = require("./world/worldNews"); // Phase 16 · World News
+const placeMemory = require("./world/placeMemory"); // Phase 16 · Place Memory
+const dreamSystem = require("./meta/dreamSystem"); // Phase 16 · Dream System
+const flashback = require("./meta/flashback"); // Phase 16 · Flashback
+const nicknames = require("./npc/nicknames"); // Phase 16 · Nickname System
+// Phase 16+ · Living World expansion
+const titles = require("./player/titles");
+const familyTree = require("./canon/familyTree");
+const property = require("./player/property");
+const wanted = require("./world/wanted");
+const festivals = require("./world/festivals");
+const calendar = require("./player/calendar");
+const livingObjects = require("./inventory/livingObjects");
+const secrets = require("./npc/secrets");
+const promises = require("./player/promises");
+const regionReputation = require("./world/regionReputation");
+const organizations = require("./world/organizations");
+// PATCH_NARRATIVE_ACCUMULATION_GAPS — arc-bound growth goals, motif registry, echo NPCs.
+const narrativeArcs = require("./story/narrativeArcs");
+const motifs = require("./story/motifs");
+const echoNpc = require("./npc/echoNpc");
+const chapters = require("./story/chapters"); // PATCH_CHAPTER_CHECKLIST
+const tensionDebt = require("./directors/tensionDebt"); // PATCH_WEBNOVEL_TECHNIQUES
+const npcArc = require("./npc/npcArc"); // PATCH_WEBNOVEL_TECHNIQUES
+// PATCH_INDIVIDUAL_WORKS_ANALYSIS — status window, cast-neglect, climax fatigue.
+const statusWindow = require("./game/statusWindow");
+const castNeglect = require("./meta/castNeglect");
+const climaxFatigue = require("./directors/climaxFatigue");
+// PATCH_IP_EXTENSIONS_PROJECT_MIO — fixed protagonist, soft goals (meta-knowledge
+// strict + dice pools + canon level are handled inline / via endpoints).
+const fixedProtagonist = require("./player/fixedProtagonist");
+const softGoals = require("./player/softGoals");
 
 const APPEARANCE_WINDOW = 10; // "recently appeared" = within the last N turns
 
@@ -116,7 +151,10 @@ function proposeStoryDirective(state, canonDb) {
   const questRefs = quest && canonDb.get(quest.quest_id) ? [quest.quest_id] : [];
 
   // Phase 6 E — "사건 필요해" 버튼: player-forced urgency, consumed once.
-  let urgency = activeEvent && (activeEvent.category === "conflict" || activeEvent.category === "politics") ? "high" : "medium";
+  // 잔잔모드: 월드 사건이 스스로 urgency 를 high 로 끌어올리지 못하게 막는다
+  // (플레이어가 직접 누른 forced_beat 는 그대로 존중).
+  const calmMode = !!(state.settings && state.settings.calm_mode);
+  let urgency = !calmMode && activeEvent && (activeEvent.category === "conflict" || activeEvent.category === "politics") ? "high" : "medium";
   if (state.forced_beat) { urgency = "forced_high"; state.forced_beat = null; }
 
   const involved_canon_refs = [...new Set([...selectedNpcs, ...worldRefs, ...foreshadow_refs, ...eventRefs, ...questRefs])];
@@ -163,10 +201,55 @@ function worldTick(deps, state, trace) {
   // Phase 5 Wave 2 — rumors: spawn from this turn's event, propagate, and mark
   // heard when the player's location is inside a rumor's spread.
   const spawnedRumor = generated ? rumors.maybeSpawnFromEvent(state, generated, canonDb, kernel) : null;
-  const rumorSpread = rumors.tickSpread(state, canonDb);
+  const rumorTick = rumors.tickSpread(state, canonDb, { calm: !!(state.settings && state.settings.calm_mode) }); // Phase 16 · Rumor Evolution
+  const rumorSpread = rumorTick.changed;
   const heard = rumors.markHeard(state, canonDb, state.current_scene && state.current_scene.location);
   // Phase 5 Wave 2 — faction reputation reacts to this turn's flags.
   const repChanges = factionReputation.applyFlagEffects(state, canonDb);
+
+  // Phase 16 · Living World — places drift/transition, NPC goals advance, and a
+  // news feed aggregates it all (even things the player never witnessed). calm
+  // mode quiets the autonomous motion; the news feed then only carries items
+  // that directly concern the player's known world.
+  const calm = !!(state.settings && state.settings.calm_mode);
+  const placeRes = calm ? { transitions: [], drifts: [] } : livingPlaces.tick(state, canonDb, memoryEngine, { lowToken });
+  const goalRes = calm ? { milestones: [], outcomes: [] } : npcGoals.advance(state, canonDb, memoryEngine, { lowToken });
+  const newsItems = worldNews.compose(state, canonDb, {
+    generated, resolved,
+    placeTransitions: placeRes.transitions,
+    goalMilestones: goalRes.milestones,
+    goalOutcomes: goalRes.outcomes,
+    spawnedRumor,
+  }, { lowToken, calm });
+  // Phase 16+ · Living World expansion — autonomous ticks (calm-aware).
+  const wantedTick = wanted.tick(state, { calm });
+  const festivalsFired = festivals.tick(state); // festivals keep firing even in calm (gentle ambiance)
+  const objectsTick = livingObjects.tick(state, { calm });
+  const orgTick = organizations.tick(state, { calm });
+  const promiseTick = promises.tick(state);
+  const calendarTick = calendar.tick(state);
+  // Festivals surface as World News notices (국가 공고).
+  state.world.news = state.world.news || [];
+  for (const f of festivalsFired) {
+    state.world.news.push({ news_id: `news_fest_${f.festival_id}_${f.year}`, turn: state.turn_number, in_world_date: state.in_world_date, kind: "공고", category: "festival", headline: `«${f.name}»`, body: f.blurb, source: "달력", refs: [], seen_by_player: false, key_moment: false });
+  }
+  state.world.news = state.world.news.slice(-worldNews.MAX_NEWS);
+
+  trace.phase16 = {
+    place_transitions: placeRes.transitions,
+    place_drifts: placeRes.drifts,
+    goal_milestones: goalRes.milestones,
+    goal_outcomes: goalRes.outcomes,
+    news: newsItems.map((n) => n.news_id),
+    rumor_mutations: rumorTick.mutations,
+    wanted: wantedTick.escalated,
+    festivals: festivalsFired.map((f) => f.festival_id),
+    objects: objectsTick.changed,
+    org: orgTick.changes,
+    promises_broken: promiseTick.broken,
+    calendar_due: calendarTick.due.map((e) => e.title),
+  };
+
   trace.world = {
     generated_event: generated ? generated.world_event_id : null,
     spawned_quest: quest ? quest.quest_id : null,
@@ -178,6 +261,47 @@ function worldTick(deps, state, trace) {
     resolved_events: resolved.map((e) => e.world_event_id),
     living_npc_changes: npcChanges,
   };
+  // Phase 16 — hand key moments back for the LLM enrichment pass in runTurn.
+  return { news: newsItems, rumorMutations: rumorTick.mutations };
+}
+
+// Phase 16 · LLM enrichment — rewrite key-moment news (a place's fall, an NPC's
+// lifelong goal fulfilled) into a richer headline + body. Rule-based text is the
+// fallback, so this is skipped under low-token / mock / calm mode.
+async function enrichNews(newsItems, lowToken, calm) {
+  if (lowToken || calm || !gemini.hasKey()) return;
+  for (const item of (newsItems || []).filter((n) => n.key_moment)) {
+    try {
+      const txt = await gemini.summarize(
+        "다음은 이 세계에서 일어난 중요한 사건 요약이다. 세계관 뉴스로 각색하라. 첫 줄에 헤드라인 한 줄, 그 아래 2~3문장 기사 본문을 순수 텍스트로만 작성하라. 시스템 표현·메타 설명 금지.",
+        `${item.headline}\n${item.body}`, "world_news");
+      if (!txt) continue;
+      const parts = txt.split("\n").map((l) => l.replace(/^#+\s*/, "").trim()).filter(Boolean);
+      if (parts[0]) item.headline = parts[0];
+      if (parts.length > 1) item.body = parts.slice(1).join(" ");
+    } catch (_) { /* keep rule-based text */ }
+  }
+}
+
+// Phase 16 · Rumor Evolution — LLM-polish a strongly-warped rumor's text (stage
+// ≥2) into a more organic "이렇게 소문이 돌더라" line. Rule-based text is the
+// fallback, so skipped under low-token / mock / calm.
+async function enrichRumors(mutations, state, canonDb, lowToken, calm) {
+  if (lowToken || calm || !gemini.hasKey()) return;
+  for (const mut of (mutations || []).filter((m) => m.key_moment)) {
+    const ent = canonDb.get(mut.rumor);
+    if (!ent || !ent.data) continue;
+    try {
+      const txt = await gemini.summarize(
+        "다음은 사람들 사이에서 변질되어 도는 소문이다. 실제 저잣거리에서 수군대듯 한 문장으로 자연스럽게 각색하라. 순수 텍스트만.",
+        mut.content, "rumor_mutation");
+      if (txt && txt.trim()) {
+        ent.data.content = txt.trim();
+        if (Array.isArray(ent.data.versions) && ent.data.versions.length) ent.data.versions[ent.data.versions.length - 1].content = txt.trim();
+        canonDb.persist();
+      }
+    } catch (_) { /* keep rule-based text */ }
+  }
 }
 
 // Phase 11 R — choose at most one sentimental item to echo this turn (15-turn
@@ -323,6 +447,66 @@ async function runTurn(deps, state, playerInput, options = {}) {
   sceneSpec.planner_hint = (state.campaign_planner && state.campaign_planner.hint) || null;
   sceneSpec.npc_candidates = storyDirective.npc_candidates || [];
   sceneSpec.relationship_transition = storyDirective.relationship_transition_pending || null; // PATCH 관계 전환 step 3
+  // Phase 16 · Place Memory — on a REVISIT, hand the AI this place's past
+  // (meaningful memories + physical changes) so it can acknowledge continuity.
+  const _pm = placeMemory.forLocation(state, canonDb, memoryEngine, sceneSpec.location);
+  sceneSpec.place_memory_line = placeMemory.isRevisit(_pm, state.turn_number) ? placeMemory.directiveLine(_pm) : null;
+  // Phase 16 · Flashback — when the present rhymes with a charged past beat,
+  // ask the GM to weave a short remembered moment in (cooldown-gated).
+  sceneSpec.flashback_line = flashback.lineFor(state, memoryEngine, sceneSpec);
+  // PATCH_NARRATIVE_ACCUMULATION_GAPS · flashback_scene — a much rarer whole-scene
+  // time-shift (explicit intent or a very strong rhyme). Suppresses the inline
+  // flashback line the same turn to avoid doubling up.
+  const _fbScene = flashback.maybeFlashbackScene(state, memoryEngine, sceneSpec, playerInput);
+  if (_fbScene) {
+    sceneSpec.scene_type = [...new Set([...(sceneSpec.scene_type || []), "flashback_scene"])];
+    sceneSpec.flashback_scene = _fbScene.line;
+    sceneSpec.flashback_line = null;
+    trace.flashback_scene = { memory: _fbScene.memory };
+  }
+  // PATCH_NARRATIVE_ACCUMULATION_GAPS · accumulation directives — the player's
+  // long-running growth arc, a recurring motif, and the absence of an echo NPC.
+  sceneSpec.narrative_arc_line = narrativeArcs.activeGrowthDirective(state);
+  sceneSpec.motif_line = motifs.recurringDirective(state, state.turn_number);
+  sceneSpec.echo_line = echoNpc.directiveLine(state, canonDb, sceneSpec);
+  // PATCH_CHAPTER_CHECKLIST — pin the active chapter's still-open required canon
+  // into this scene's refs (so they stay in the prompt) and hand the GM a soft
+  // reminder of the chapter's unfinished spine.
+  const _pinned = chapters.pinnedCanonRefs(state).filter((r) => canonDb.get(r));
+  if (_pinned.length) sceneSpec.canon_refs = [...new Set([...(sceneSpec.canon_refs || []), ..._pinned])];
+  sceneSpec.chapter_line = chapters.directive(state, canonDb);
+  // PATCH_IP_EXTENSIONS_PROJECT_MIO — in fixed-protagonist mode, always keep the
+  // bound character's own canon sheet in context.
+  const _boundRef = fixedProtagonist.boundRef(state);
+  if (_boundRef && canonDb.get(_boundRef)) sceneSpec.canon_refs = [...new Set([...(sceneSpec.canon_refs || []), _boundRef])];
+  // PATCH_WEBNOVEL_TECHNIQUES — 고구마-사이다 rhythm cue (from current debt) +
+  // a present NPC's overdue spotlight (캐빨).
+  sceneSpec.tension_debt_line = tensionDebt.directive(state);
+  sceneSpec.npc_arc_line = npcArc.directive(state, canonDb, sceneSpec.participants);
+  // PATCH_INDIVIDUAL_WORKS_ANALYSIS — genre status-window permission (numeric
+  // exception), a nudge for a neglected invested NPC, and a break-the-pattern cue
+  // when recent climaxes have grown monotonous. All computed before the narrative.
+  sceneSpec.status_window_directive = statusWindow.promptDirective(state);
+  sceneSpec.cast_neglect_line = castNeglect.directive(state, canonDb);
+  sceneSpec.climax_fatigue_line = climaxFatigue.directive(state);
+  // Phase 16 · Nickname — how the present NPCs address the player this scene.
+  sceneSpec.nickname_line = nicknames.directiveLine(nicknames.present(state, canonDb, sceneSpec.participants));
+  // Phase 16+ · situational directives (each null unless it applies this scene).
+  sceneSpec.wanted_line = wanted.directive(state, sceneSpec.location, canonDb);
+  sceneSpec.festival_line = festivals.directive(state);
+  sceneSpec.home_line = property.homeDirective(state, sceneSpec.location);
+  sceneSpec.calendar_line = calendar.reminderDirective(state);
+  sceneSpec.promise_line = promises.directive(state, sceneSpec.participants);
+  // Secret: the first present NPC willing to open up (trust-gated). sealed never surfaces.
+  sceneSpec.secret_line = (() => {
+    for (const ref of sceneSpec.participants || []) {
+      const ent = canonDb.get(ref);
+      if (!ent || ent.type !== "Character") continue;
+      const line = secrets.directive(ent, relationshipGraph.playerEdge(state, ref));
+      if (line) return line;
+    }
+    return null;
+  })();
   // A4 — a Discovery scene surfaces the next hidden clue.
   sceneSpec.mystery_hint = (sceneSpec.scene_type || []).includes("discovery") ? mystery.discoveryHint(state) : null;
   // Phase 11 R — sentimental item echo: if the player carries a "sentimental"
@@ -372,13 +556,20 @@ async function runTurn(deps, state, playerInput, options = {}) {
     responseLength: state.settings && state.settings.response_length,
     // C9 — default ON when unset (older saves migrate without the flag).
     playerAgencyLock: !state.settings || state.settings.player_agency_lock !== false,
+    // 잔잔한 관계 중심 모드 — 억지 사건/갈등을 밀어넣지 말라는 오버라이드 (기본 꺼짐).
+    calmMode: !!(state.settings && state.settings.calm_mode),
     // C1/C2 — creation-time background + free-text notes.
     setupNotes: {
       background: state.world && state.world.background_description,
       worldNotes: state.world && state.world.notes,
       playerNotes: state.player && state.player.notes,
     },
+    state,
     optimize: { canonLod, canonUnchanged, memoryUnchanged, allocation: tokenBudget.DEFAULT_ALLOCATION }, // V3/V4/V5
+    // PATCH_IP_EXTENSIONS_PROJECT_MIO — campaign-level IP directives.
+    metaKnowledgeStrict: !!(state.settings && state.settings.meta_knowledge_strict),
+    fixedProtagonistLine: fixedProtagonist.promptDirective(state, canonDb),
+    softGoalsLine: softGoals.promptDirective(state),
   });
   const systemPrompt = assembled.prompt;
   trace.system_prompt = systemPrompt;
@@ -387,11 +578,26 @@ async function runTurn(deps, state, playerInput, options = {}) {
   state.prompt_profile.prompt_version = PROMPT_VERSION; // prompt versioning (extra)
   tokenBudget.record(state, { total_budget: tokenBudget.DEFAULT_TURN_BUDGET, used: assembled.tokens_estimate, by_block: tokenBudget.DEFAULT_ALLOCATION, trimmed: assembled.trims });
   // Phase 13 V1/V2 — Context Cache: evaluate the static block's cache state.
-  const staticBlock = [SYSTEM_PROMPT_BASE, CONTENT_INTENSITY_LINES[(state.settings && state.settings.content_intensity) || "medium"], (state.house_rules || []).join("|"), PROMPT_VERSION].join("\n");
+  const promptOverrideKey = [
+    promptSettings.getPrompt(state, "narrative.base", SYSTEM_PROMPT_BASE),
+    promptSettings.appendBlock(state, "narrative.system_addendum", ""),
+    state.prompt_overrides && state.prompt_overrides.enabled ? state.prompt_overrides.system_addendum || "" : "",
+  ].join("\n");
+  const staticBlock = [promptOverrideKey, CONTENT_INTENSITY_LINES[(state.settings && state.settings.content_intensity) || "medium"], (state.house_rules || []).join("|"), (state.settings && state.settings.calm_mode) ? "calm" : "", PROMPT_VERSION].join("\n");
   trace.context_cache = contextCache.evaluate(state.campaign_id, staticBlock);
   state.prompt_profile.context_cache = { key: trace.context_cache.key, reason: trace.context_cache.reason, hit: trace.context_cache.hit };
   // Phase 14 X1 — keep the last full prompt for the Prompt Viewer.
-  state.last_prompt = { turn: state.turn_number, system_prompt: systemPrompt, player_input: playerInput };
+  const extractionBase = promptSettings.getPrompt(state, "extraction.base", EXTRACTION_SYSTEM_PROMPT);
+  const extractionAddendum = [
+    promptSettings.appendBlock(state, "extraction.addendum", ""),
+    state.prompt_overrides && state.prompt_overrides.enabled && state.prompt_overrides.extraction_addendum
+      ? String(state.prompt_overrides.extraction_addendum).slice(0, 4000)
+      : "",
+  ].map((s) => String(s || "").trim()).filter(Boolean).join("\n\n");
+  const extractionPrompt = extractionBase + (extractionAddendum
+    ? `\n\n<campaign_extraction_override>\n${extractionAddendum}\n위 추가 지시는 JSON 형식과 기존 스키마를 깨지 않는 범위에서만 반영한다.\n</campaign_extraction_override>`
+    : "");
+  state.last_prompt = { turn: state.turn_number, system_prompt: systemPrompt, extraction_prompt: extractionPrompt, player_input: playerInput };
 
   // --- Step 10: Gemini narrative call ------------------------------------
   const tNarr = Date.now();
@@ -400,7 +606,7 @@ async function runTurn(deps, state, playerInput, options = {}) {
 
   // --- Step 11: Post-process extraction -> Memory/Canon/Flag -------------
   const tExtract = Date.now();
-  let extraction = await gemini.extractFacts(EXTRACTION_SYSTEM_PROMPT, narrative);
+  let extraction = await gemini.extractFacts(extractionPrompt, narrative);
   let msExtraction = Date.now() - tExtract;
 
   // Phase 14 W1/W2 — integrity watchdog. On a HIGH-severity issue (contradiction,
@@ -411,7 +617,7 @@ async function runTurn(deps, state, playerInput, options = {}) {
     const stricter = systemPrompt + `\n\n[재요청] 직전 서사에 서사 무결성 문제가 있었습니다: ${watch.reason}\n이 문제를 바로잡아 Canon/설정과 일관되게 다시 서술하세요.`;
     narrative = await gemini.generateNarrative(stricter, playerInput);
     const t2 = Date.now();
-    extraction = await gemini.extractFacts(EXTRACTION_SYSTEM_PROMPT, narrative);
+    extraction = await gemini.extractFacts(extractionPrompt, narrative);
     msExtraction += Date.now() - t2;
     trace.watchdog_regen = { reason: watch.reason };
   }
@@ -447,6 +653,9 @@ async function runTurn(deps, state, playerInput, options = {}) {
       const death = npcLifecycle.handleDeath({ canonDb, memoryEngine, kernel }, state, cu.canon_id);
       applied.canon[applied.canon.length - 1].death = death;
       trace.npc_death = death;
+      // PATCH_NARRATIVE_ACCUMULATION_GAPS — a bonded NPC's death leaves an echo.
+      const echo = echoNpc.onDeparture(canonDb, state, cu.canon_id, "loss", relationshipGraph.playerEdge(state, cu.canon_id));
+      if (echo) trace.echo_created = { canon_id: cu.canon_id, kind: echo.kind };
     }
   }
 
@@ -469,6 +678,41 @@ async function runTurn(deps, state, playerInput, options = {}) {
   // Phase 5 Wave 2 — inventory: apply item gains/uses detected by extraction.
   const memRefs = applied.memories.filter((m) => m.ok && m.id).map((m) => m.id);
   applied.items = inventory.applyExtraction(state, canonDb, kernel, extraction, memRefs);
+
+  // Phase 16+ · Living World expansion — apply narrative-detected changes. These
+  // fields are optional in the extraction; each apply no-ops when absent, so the
+  // plumbing is ready the moment the extraction prompt starts emitting them.
+  trace.p16 = {
+    property: property.applyExtraction(state, extraction.property_changes, state.turn_number),
+    wanted: wanted.applyExtraction(state, extraction.wanted_changes, state.turn_number),
+    kinship: familyTree.applyExtraction(state, extraction.kinship_changes),
+    secrets: secrets.applyExtraction(state, canonDb, extraction.secret_reveals),
+    promises: promises.applyExtraction(state, extraction.promise_changes, state.turn_number),
+    region_reputation: regionReputation.applyExtraction(state, extraction.region_reputation_changes, state.turn_number),
+    organizations: organizations.applyExtraction(state, extraction.organization_changes, state.turn_number),
+    objects: livingObjects.applyExtraction(state, extraction.object_changes, state.turn_number),
+    // PATCH_NARRATIVE_ACCUMULATION_GAPS — arc-bound growth goals + motif registry.
+    arcs: narrativeArcs.applyExtraction(state, extraction.arc_changes, state.turn_number),
+    motifs: motifs.applyExtraction(state, extraction.motif_hints, state.turn_number),
+    chapter: chapters.applyExtraction(state, extraction.chapter_changes, state.turn_number),
+    npc_arcs: npcArc.applyExtraction(state, extraction.npc_arc_changes, state.turn_number),
+    soft_goals: softGoals.applyExtraction(state, extraction.soft_goal_progress, state.turn_number),
+  };
+  // PATCH_WEBNOVEL_TECHNIQUES — update 고구마-사이다 debt from what the scene realized.
+  trace.tension_debt = tensionDebt.update(state, { sceneSpec, check, difficulty: state.difficulty_director });
+  // PATCH_INDIVIDUAL_WORKS_ANALYSIS — fingerprint this scene if it was a climax,
+  // so the next resolution can be nudged away from a repeated pattern.
+  climaxFatigue.record(state, sceneSpec);
+  // Arc milestones crossed this turn become Historical memories (a payoff hook).
+  for (const ms of (trace.p16.arcs && trace.p16.arcs.milestones) || []) {
+    try {
+      memoryEngine.write({
+        summary: `오래 이어온 흐름 "${ms.title}"이(가) ${ms.label}`,
+        participants: ["player"], emotion_tags: ["resolve"], emotion_intensity: 2,
+        canon_refs: [], tier: 3, tier_reason: "narrative arc milestone",
+      }, state.turn_number);
+    } catch (_) {}
+  }
 
   // Phase 5 Wave 2 — identity milestone when the reflection/extraction call
   // detects a genuine identity shift (Identity Engine, lightweight).
@@ -511,6 +755,12 @@ async function runTurn(deps, state, playerInput, options = {}) {
       trace.relationship_milestones.push(ms);
     }
   }
+  // Phase 16+ · Dynamic Title — re-derive earned titles from this turn's state
+  // (flags/reputation/wanted/org), BEFORE nicknames so they can consume titles.
+  trace.title_changes = titles.recompute(state, canonDb);
+  // Phase 16 · Nickname — relationships moved this turn, so re-derive how each
+  // met NPC addresses the player (그대 / 은인 / 배신자 / 북쪽의 검사 …).
+  trace.nickname_changes = nicknames.updateAll(state, canonDb);
 
   // Phase 9 F2 — a life-changing event may spawn/grow a dynamic trait. If the
   // trait already exists, nudge it (throttled by the Kernel); else create it
@@ -532,6 +782,9 @@ async function runTurn(deps, state, playerInput, options = {}) {
   // scene is now discovered.
   canonDb.markDiscovered([...(sceneSpec.participants || []), ...trace.canon_used], state.turn_number);
   trace.applied = applied;
+  // PATCH_CHAPTER_CHECKLIST — mark the active chapter's checklist items that this
+  // scene satisfied (required canon appeared / required foreshadow resolved).
+  trace.chapter_tick = chapters.tick(state, canonDb, sceneSpec);
 
   // Update player emotion wave with what the scene realized (drives fatigue).
   applyOutcome(
@@ -572,7 +825,13 @@ async function runTurn(deps, state, playerInput, options = {}) {
   });
 
   // Wave 1/4 — world simulation / relationship / living-NPC / quest tick.
-  worldTick({ canonDb, memoryEngine, kernel }, state, trace);
+  const phase16 = worldTick({ canonDb, memoryEngine, kernel }, state, trace);
+  // Phase 16 — enrich key-moment news + warped rumors with an LLM pass (async;
+  // falls back to rule-based text on mock/low-token/calm). Persisted by the
+  // end-of-turn save below.
+  const _calm = !!(state.settings && state.settings.calm_mode);
+  await enrichNews(phase16.news, lowToken, _calm);
+  await enrichRumors(phase16.rumorMutations, state, canonDb, lowToken, _calm);
 
   // Phase 7 — slow-context tick: hidden variables, difficulty director, story
   // stage / planner, weather, scheduled actions. Runs after the world tick so
@@ -642,11 +901,19 @@ async function runTurn(deps, state, playerInput, options = {}) {
     let text = null;
     // U3 — low-token: no LLM digest; the UI shows only a day divider.
     try {
-      if (!lowToken && gemini.hasKey() && dayMems.length) text = await gemini.summarize("다음은 하루 동안 있었던 일이다. 3~4문장으로 '그날의 정리'를 서술하라. 순수 텍스트로만.", dayMems.join("\n"), "daily_digest");
+      if (!lowToken && gemini.hasKey() && dayMems.length) text = await gemini.summarize(promptSettings.getPrompt(state, "summary.daily_digest"), dayMems.join("\n"), "daily_digest");
     } catch (_) {}
     if (!text && !lowToken) text = dayMems.length ? dayMems.slice(-3).join(" ") : `${prevDay}일차가 조용히 지나갔다.`;
     dailySummary = { day: prevDay, summary: text || "", low_token: lowToken, created_turn: state.turn_number };
     state.daily_summaries = [...(state.daily_summaries || []), dailySummary].slice(-30);
+  }
+
+  // Phase 16 · Dream System — a rolled-over day means the player slept; they may
+  // dream (악몽/예지몽/회상몽). Returned as a card for the UI, stored in state.dreams.
+  let dream = null;
+  if ((state.in_world_day || 1) > prevDay) {
+    dream = await dreamSystem.maybeGenerate(state, memoryEngine, gemini, { lowToken, trigger: "sleep" });
+    if (dream) trace.dream = { type: dream.type, seed_kind: dream.seed_kind };
   }
 
   // C2 — persist any staged transition so the confirm endpoint can act on it.
@@ -675,7 +942,9 @@ async function runTurn(deps, state, playerInput, options = {}) {
     ending: endingSummary,
     pending_transition: pendingTransition || null, // Phase 8 C2
     daily_summary: dailySummary, // Phase 10 J2
+    dream, // Phase 16 · Dream System — 수면 시 꿈 카드
     time_accel: trace.time_accel || null, // Phase 14 Y — "그동안 있었던 일" card
+    status_window: statusWindow.build(state), // PATCH_INDIVIDUAL_WORKS_ANALYSIS
   };
 }
 

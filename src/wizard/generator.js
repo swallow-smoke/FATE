@@ -66,18 +66,20 @@ function mockCharacters(text, npcCount) {
   };
 }
 
-async function generateWorld(freeText) {
+async function generateWorld(freeText, state = null) {
+  const promptSettings = require("../gemini/promptSettings");
   try {
-    const j = await gemini.generateStructured(WORLD_GEN_PROMPT, freeText, { temperature: 0.5 });
+    const j = await gemini.generateStructured(promptSettings.getPrompt(state, "wizard.world", WORLD_GEN_PROMPT), freeText, { temperature: 0.5 });
     if (j) return { ...j, _mock: false };
   } catch (e) { /* fall through to mock */ }
   return { ...mockWorld(freeText), _mock: true };
 }
 
-async function generateCharacters(freeText, worldContext, npcCount) {
+async function generateCharacters(freeText, worldContext, npcCount, state = null) {
+  const promptSettings = require("../gemini/promptSettings");
   const user = `${freeText}\n\n[세계관 맥락]\n지역: ${(worldContext.regions || []).map((r) => r.canon_id).join(", ")}\n세력: ${(worldContext.factions || []).map((f) => f.canon_id).join(", ")}\nNPC ${npcCount || 3}명 추천.`;
   try {
-    const j = await gemini.generateStructured(CHARACTER_GEN_PROMPT, user, { temperature: 0.6 });
+    const j = await gemini.generateStructured(promptSettings.getPrompt(state, "wizard.characters", CHARACTER_GEN_PROMPT), user, { temperature: 0.6 });
     if (j) return { ...j, _mock: false };
   } catch (e) { /* fall through to mock */ }
   return { ...mockCharacters(freeText, npcCount), _mock: true };
@@ -104,6 +106,7 @@ const SUGGEST_SPECS = {
 // suggestField(field, context) → { field, suggestion } (suggestion is a value or
 // a small object). Falls back to a deterministic mock when no API key.
 async function suggestField(field, context) {
+  const promptSettings = require("../gemini/promptSettings");
   const spec = SUGGEST_SPECS[field];
   if (!spec) return { field, suggestion: null, error: "unknown_field" };
   const ctx = context || {};
@@ -119,7 +122,8 @@ async function suggestField(field, context) {
     ctx.npc && ctx.npc.birth_name ? `현재 NPC: ${ctx.npc.birth_name}` : null,
   ].filter(Boolean).join("\n");
   const schema = spec.schema || `{ "${spec.key}": "" }`;
-  const sys = `당신은 TRPG 설정을 돕는 어시스턴트입니다. 아래 맥락에 어울리도록 요청된 항목만 생성하세요.\n요청: ${spec.instr}\n순수 JSON만 출력합니다. 스키마: ${schema}\n원칙: 과하게 지어내지 말고 맥락에 일관되게. 사용자가 이미 적은 값이 있으면 그것과 어울리게.`;
+  const fallbackSys = `당신은 TRPG 설정을 돕는 어시스턴트입니다. 아래 맥락에 어울리도록 요청된 항목만 생성하세요.\n요청: ${spec.instr}\n순수 JSON만 출력합니다. 스키마: ${schema}\n원칙: 과하게 지어내지 말고 맥락에 일관되게. 사용자가 이미 적은 값이 있으면 그것과 어울리게.`;
+  const sys = promptSettings.getPrompt(ctx.prompt_state || null, "wizard.field_suggest", fallbackSys, { request: spec.instr, schema });
   try {
     const j = await gemini.generateStructured(sys, ctxLines || "(추가 맥락 없음)", { temperature: 0.7 });
     if (j) {

@@ -28,8 +28,11 @@ async function renderLauncher() {
       <div class="empty-state">
         <div class="empty-mark">N</div>
         <h2>아직 시작된 이야기가 없습니다</h2>
+        <p class="muted">처음이라면 샘플을 먼저 몇 턴 플레이해보고 감을 잡아도 좋습니다.</p>
+        <button class="big-btn" id="sampleRiaBtn">먼저 체험해보기</button>
         <button class="primary big-btn" onclick="location.hash='#/new'">＋ 새 캠페인 만들기</button>
       </div>`;
+    $("sampleRiaBtn").addEventListener("click", startRiaSample);
     return;
   }
 
@@ -64,6 +67,9 @@ function renderLauncherGrid() {
     html = active.map(cardHtml).join("") + `
       <div class="camp-card new-card" onclick="location.hash='#/new'">
         <div class="cc-plus">＋</div><b>새 캠페인</b>
+      </div>
+      <div class="camp-card new-card" id="sampleRiaCard">
+        <div class="cc-plus">🌧</div><b>리아 샘플</b><span class="muted">설정 없이 바로 체험</span>
       </div>`;
     // "전체"일 때만 완결 섹션을 접어서 함께 노출.
     if (launcherFilter === "all" && completed.length) {
@@ -82,6 +88,15 @@ function renderLauncherGrid() {
       e.stopPropagation();
       openCardMenu(btn.dataset.id, btn);
     }));
+  const sample = $("sampleRiaCard");
+  if (sample) sample.addEventListener("click", startRiaSample);
+}
+
+async function startRiaSample() {
+  try {
+    const d = await apiPost("/api/sample/ria", { campaign_id: "sample_ria", overwrite: true });
+    location.hash = "#/c/" + d.campaign_id;
+  } catch (e) { showBanner("샘플 시작 실패: " + e.message); }
 }
 
 function openCardMenu(id, anchorBtn) {
@@ -93,6 +108,7 @@ function openCardMenu(id, anchorBtn) {
   pop.style.left = Math.max(8, rect.right - 140) + "px";
   pop.innerHTML = `
     <button data-act="dup">⑂ 복제</button>
+    <button data-act="reset">↻ 다시 시작</button>
     <button data-act="del" class="danger">🗑 삭제</button>`;
   document.body.appendChild(pop);
   const close = () => pop.remove();
@@ -112,6 +128,13 @@ function openCardMenu(id, anchorBtn) {
     if (!confirm(`캠페인 "${id}"을(를) 삭제할까요? 되돌릴 수 없습니다.`)) return;
     await api("/api/campaign/" + id, { method: "DELETE" });
     renderLauncher();
+  });
+  pop.querySelector('[data-act="reset"]').addEventListener("click", async (e) => {
+    e.stopPropagation();
+    close();
+    if (!confirm(`"${id}"을(를) 같은 카드에서 새로 시작할까요? 현재 진행은 백업 ID로 분리됩니다.`)) return;
+    try { const r = await apiPost(`/api/campaign/${id}/reset`, {}); renderLauncher(); showBanner(`다시 시작했습니다. 이전 진행 백업: ${r.backup_id}`); }
+    catch (err) { showBanner("다시 시작 실패: " + err.message); }
   });
 }
 

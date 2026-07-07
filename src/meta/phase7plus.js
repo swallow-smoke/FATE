@@ -5,6 +5,8 @@
 
 "use strict";
 
+const dimensionRegistry = require("../custom/dimensionRegistry");
+
 const REL_KEYS = ["trust", "affection", "fear", "respect", "obligation", "dependency", "hatred", "guilt", "obsession", "jealousy", "distance"];
 const HIDDEN_DEFAULTS = {
   sanity: 0.8,
@@ -60,7 +62,11 @@ function ensure(state) {
   state.schema_version = Math.max(Number(state.schema_version || 4), 7);
   state.story_structure = defaultStoryStructure(state.story_structure);
   state.player = state.player || {};
-  if (!state.player.hidden_variables) state.player.hidden_variables = { ...HIDDEN_DEFAULTS };
+  const registry = dimensionRegistry.ensure(state);
+  if (!state.player.hidden_variables) state.player.hidden_variables = { ...HIDDEN_DEFAULTS, ...dimensionRegistry.hiddenDefaults(registry) };
+  for (const [k, v] of Object.entries(dimensionRegistry.hiddenDefaults(registry))) {
+    if (state.player.hidden_variables[k] === undefined) state.player.hidden_variables[k] = v;
+  }
   if (!state.player.dynamic_traits) state.player.dynamic_traits = [];
   state.hidden_variable_log = state.hidden_variable_log || [];
   state.difficulty_director = state.difficulty_director || { recent_checks: [], hint: null, last_updated_turn: 0 };
@@ -227,7 +233,7 @@ function hiddenVariableDirective(state) {
   if (hv.hope <= 0.3) lines.push("희망이 낮다 — 냉소적이거나 체념한 듯한 반응 경향(과장하지 말 것).");
   if (hv.trauma_accumulation >= 0.6) lines.push("누적된 상처 — 특정 자극에 과민하게 반응할 여지를 둘 것.");
   if (hv.corruption <= 0.1 && hv.humanity >= 0.85) lines.push("여전히 곧은 심지 — 온기가 배어나게.");
-  return lines;
+  return [...new Set([...dimensionRegistry.hiddenDirectives(state), ...lines])].slice(0, 12);
 }
 
 // A5 — weather/season line for <scene_directive>.

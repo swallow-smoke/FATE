@@ -20,7 +20,7 @@ function isLowSpec() {
 function addPlayer(text) {
   const d = document.createElement("div");
   d.className = "msg player";
-  d.innerHTML = `<span class="badge">플레이어</span>${escapeHtml(text)}`;
+  d.innerHTML = `<span class="badge">당신</span>${escapeHtml(text)}`;
   $("log").appendChild(d);
   animatePaperIn(d, 24);
   scrollLog();
@@ -239,7 +239,7 @@ async function runTurn(text, timeSkip) {
   $("choices").classList.add("hidden");
   const thinking = document.createElement("div");
   thinking.className = "msg system";
-  thinking.textContent = "GM이 장면을 조립하는 중…";
+  thinking.textContent = "다음 문장이 떠오르는 중…";
   $("log").appendChild(thinking); scrollLog();
   inflightController = new AbortController();
   $("cancelSend").classList.remove("hidden");
@@ -417,6 +417,8 @@ function wireStoryControls() {
   // A4 — 런처로 돌아가기 버튼(〈). 이전엔 핸들러가 없어 눌러도 반응이 없었음.
   const home = $("homeBtn");
   if (home && !home._wired) { home._wired = true; home.addEventListener("click", () => { location.hash = "#/"; }); }
+  const layout = $("layoutToggle");
+  if (layout && !layout._wired) { layout._wired = true; layout.addEventListener("click", toggleLayoutMode); updateLayoutToggle(); }
   $("composer").addEventListener("submit", (e) => { e.preventDefault(); submitComposer(); });
   $("input").addEventListener("input", handleComposerInput);
   $("input").addEventListener("keydown", (e) => {
@@ -491,6 +493,46 @@ function wireStoryControls() {
   $("forceEventBtn").addEventListener("click", async () => {
     await apiPost(`/api/campaign/${NOS.campaign}/force-event`);
     addSystem("다음 장면에 사건이 강하게 반영되도록 요청했습니다.");
+  });
+
+  $("deepTalkBtn").addEventListener("click", () => {
+    const text = "가까운 인물과 조용히 마주 앉아, 평소에는 꺼내지 못했던 깊은 이야기를 나누고 싶다.";
+    addPlayer(text);
+    runTurn(text);
+  });
+
+  $("dailyEventBtn").addEventListener("click", () => {
+    const pool = [
+      "무거운 사건 대신, 지금 장소에서 벌어지는 소소한 일상의 일을 따라가 본다.",
+      "잠시 주변 사람들의 평범한 하루에 섞여 작은 부탁이나 우연을 마주한다.",
+      "오늘의 날씨와 거리의 소리 속에서, 사소하지만 기억에 남을 일을 찾아본다.",
+    ];
+    const text = pool[Math.floor(Math.random() * pool.length)];
+    addPlayer(text);
+    runTurn(text);
+  });
+
+  $("feedbackBtn").addEventListener("click", () => {
+    openModal(`
+      <h3>이 장면 이상해요</h3>
+      <p class="muted">현재 턴의 상태와 최근 대화가 로컬 피드백으로 저장됩니다.</p>
+      <div class="modal-row"><label>이유</label><select id="fbReason">
+        <option>캐릭터 말투가 이상함</option>
+        <option>설정/Canon과 충돌</option>
+        <option>너무 노골적이거나 불편함</option>
+        <option>전개가 뜬금없음</option>
+        <option>UI/버그 문제</option>
+        <option>기타</option>
+      </select></div>
+      <div class="modal-row"><textarea id="fbNote" rows="4" placeholder="짧게 적어두면 나중에 모아보기 쉽습니다."></textarea></div>
+      <div class="modal-actions"><button id="fbSave" class="primary">저장</button><button onclick="closeModal()">취소</button></div>`);
+    $("fbSave").addEventListener("click", async () => {
+      try {
+        await apiPost(`/api/feedback/${NOS.campaign}`, { reason: $("fbReason").value, note: $("fbNote").value });
+        closeModal();
+        addSystem("피드백 스냅샷을 저장했습니다.");
+      } catch (e) { showBanner("피드백 저장 실패: " + e.message); }
+    });
   });
 
   // Phase 6 E — 동전던지기/운세뽑기: pure client randomness, no State/AI touch.

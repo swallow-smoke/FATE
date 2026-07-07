@@ -24,6 +24,7 @@ const KIND_TO_CATEGORY = {
   daily_digest: "daily_digest", npc_background: "npc_background",
   director_debate: "director_debate", internet_search: "internet_search",
   npc_proactive: "npc_proactive", structured_gen: "wizard_generation",
+  notion_classify: "notion_import", // PATCH Notion Import §8 — 별도 사용량 카테고리
 };
 function categoryOf(kind) { return KIND_TO_CATEGORY[kind] || kind || "other"; }
 function today() { return new Date().toISOString().slice(0, 10); }

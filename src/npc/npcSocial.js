@@ -37,6 +37,9 @@ function proactivityScore(state, canonDb, edge) {
 
 // P — run at turn start (esp. after a time skip) or on the background cadence.
 function proactiveContact(state, canonDb, { force = false, lowToken = false } = {}) {
+  // 잔잔한 관계 중심 모드 — NPC 가 먼저 들이대지 않는다. 시간 스킵 시의 force 도 무시하고,
+  // 답 안 한 메시지에 대한 distance 페널티도 부과하지 않는다 (관계 진전을 방해하지 않기 위함).
+  if (state.settings && state.settings.calm_mode) return { messages: [], distance_drift: [] };
   const turn = state.turn_number;
   // U3 — low-token widens the cadence (never fully off; P is core to the feel).
   const period = lowToken ? 30 : PROACTIVE_PERIOD;

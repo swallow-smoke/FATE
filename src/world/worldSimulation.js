@@ -46,6 +46,9 @@ function pickCategory(state, canonDb) {
 
 // Generate one event if the period has elapsed. Returns the event or null.
 function maybeGenerateEvent(state, canonDb) {
+  // 잔잔한 관계 중심 모드 — 억지 세계 사건(정치/충돌 등)을 생성하지 않는다.
+  // 이걸 막으면 여기서 파생되는 dynamicQuest·rumor 도 함께 발생하지 않는다.
+  if (state.settings && state.settings.calm_mode) return null;
   const period = (state.settings && state.settings.world_event_period) || 15;
   const turn = state.turn_number;
   if (turn === 0 || turn % period !== 0) return null;
